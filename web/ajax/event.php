@@ -1,36 +1,37 @@
 <?php
-ini_set('display_errors','0');
+ini_set('display_errors', '0');
 
-if ( empty($_REQUEST['id']) && empty($_REQUEST['eids']) ) {
-  ajaxError('No event id(s) supplied');
-}
-
-if ( canView('Events') ) {
+if ( canView('Events') or canView('Snapshots') ) {
   switch ( $_REQUEST['action'] ) {
   case 'video' :
-    if ( empty($_REQUEST['videoFormat']) ) {
+    if (empty($_REQUEST['videoFormat'])) {
       ajaxError('Video Generation Failure, no format given');
-    } elseif ( empty($_REQUEST['rate']) ) {
+    } else if (empty($_REQUEST['rate'])) {
       ajaxError('Video Generation Failure, no rate given');
-    } elseif ( empty($_REQUEST['scale']) ) {
+    } else if (empty($_REQUEST['scale'])) {
       ajaxError('Video Generation Failure, no scale given');
     } else {
-      $sql = 'SELECT E.*,M.Name AS MonitorName,M.DefaultRate,M.DefaultScale FROM Events AS E INNER JOIN Monitors AS M ON E.MonitorId = M.Id WHERE E.Id = ?'.monitorLimitSql();
-      if ( !($event = dbFetchOne($sql, NULL, array( $_REQUEST['id']))) ) {
+      $sql = '
+      SELECT E.*, M.Name AS MonitorName,M.DefaultRate,M.DefaultScale, GROUP_CONCAT(T.Name SEPARATOR ", ") AS Tags
+      FROM Events AS E
+      INNER JOIN Monitors AS M ON E.MonitorId = M.Id
+      LEFT JOIN Events_Tags AS ET ON E.Id = ET.EventId
+      LEFT JOIN Tags AS T ON T.Id = ET.TagId
+      WHERE E.Id = ? GROUP BY E.Id '.monitorLimitSql();
+      if (!($event = dbFetchOne($sql, NULL, array( $_REQUEST['id'])))) {
         ajaxError('Video Generation Failure, Unable to load event');
       } else {
-        if ( $videoFile = createVideo($event, $_REQUEST['videoFormat'], $_REQUEST['rate'], $_REQUEST['scale'], !empty($_REQUEST['overwrite'])) )
+        require_once('includes/Event.php');
+        $Event = new ZM\Event($event);
+
+        if ( $videoFile = $Event->createVideo( $_REQUEST['videoFormat'], $_REQUEST['rate'], $_REQUEST['scale'], $_REQUEST['transform'], !empty($_REQUEST['overwrite'])) ) {
           ajaxResponse(array('response'=>$videoFile));
-        else
+        } else {
           ajaxError('Video Generation Failed');
+        }
       }
     }
     $ok = true;
-    break;
-  case 'deleteVideo' :
-    unlink( $videoFiles[$_REQUEST['id']] );
-    unset( $videoFiles[$_REQUEST['id']] );
-    ajaxResponse();
     break;
   case 'export' :
     require_once(ZM_SKIN_PATH.'/includes/export_functions.php');
@@ -74,46 +75,149 @@ if ( canView('Events') ) {
     else
       $exportCompress = false;
 
+    if ( !empty($_REQUEST['exportStructure']) )
+      $exportStructure = $_SESSION['export']['structure'] = $_REQUEST['exportStructure'];
+    else
+      $exportStructure = false;
+
     session_write_close();
 
-    $exportIds = !empty($_REQUEST['eids']) ? $_REQUEST['eids'] : $_REQUEST['id'];
-    if ( $exportFile = exportEvents(
+    $exportIds = [];
+    if (!empty($_REQUEST['eids'])) {
+      $exportIds = array_map(function($eid) {return validCardinal($eid);}, $_REQUEST['eids']);
+    } else if (isset($_REQUEST['id'])) {
+      $exportIds = [validCardinal($_REQUEST['id'])];
+    }
+
+    $exportRoot = !empty($_REQUEST['exportFile']) ? preg_replace('/[^\w\-.]/', '', $_REQUEST['exportFile']) : '';
+    if (empty($exportRoot)) $exportRoot = 'zmExport';
+    $exportConnkey = preg_replace('/[^\w\-.]/', '', isset($_REQUEST['connkey']) ? $_REQUEST['connkey'] : '');
+
+    if ($exportFile = exportEvents(
       $exportIds,
-      (isset($_REQUEST['connkey'])?$_REQUEST['connkey']:''),
+      $exportConnkey,
       $exportDetail,
       $exportFrames,
       $exportImages,
       $exportVideo,
       $exportMisc,
       $exportFormat,
-      $exportCompress
-    ) )
-    ajaxResponse(array('exportFile'=>$exportFile));
-    else
-      ajaxError('Export Failed');
-    break;
-  case 'download' :
-    require_once(ZM_SKIN_PATH.'/includes/export_functions.php');
-    $exportVideo = 1;
-    $exportFormat = $_REQUEST['exportFormat'];
-    $exportStructure = 'flat';
-    $exportIds = !empty($_REQUEST['eids'])?$_REQUEST['eids']:$_REQUEST['id'];
-    if ( $exportFile = exportEvents(
-      $exportIds,
-      (isset($_REQUEST['connkey'])?$_REQUEST['connkey']:''),
-      false,#detail
-      false,#frames
-      false,#images
-      $exportVideo,
-      false,#Misc
-      $exportFormat,
-      false#,#Compress
-      #$exportStructure
-    ) ) {
-      ajaxResponse(array('exportFile'=>$exportFile,'exportFormat'=>$exportFormat, 'connkey'=>(isset($_REQUEST['connkey'])?$_REQUEST['connkey']:'')));
+      $exportCompress,
+      $exportStructure,
+      $exportRoot
+    )) {
+      ajaxResponse(array('exportFile'=>$exportFile));
     } else {
       ajaxError('Export Failed');
     }
+    break;
+  case 'download' :
+    require_once('includes/download_functions.php');
+    $exportFormat = (isset($_REQUEST['exportFormat']) and ($_REQUEST['exportFormat'] === 'tar' or $_REQUEST['exportFormat'] === 'zip')) ? $_REQUEST['exportFormat'] : 'zip';
+    $exportConnkey = preg_replace('/[^\w\-.]/', '', isset($_REQUEST['connkey']) ? $_REQUEST['connkey'] : '');
+    $exportFileName = isset($_REQUEST['exportFileName']) ? $_REQUEST['exportFileName'] : '';
+
+    if (!$exportFileName) $exportFileName = 'Export'.$exportConnkey;
+    $exportFileName = preg_replace('/[^\p{L}\p{N}\-\.\(\)]/u', '', $exportFileName);
+
+    $exportIds = [];
+    if (!empty($_REQUEST['eids'])) {
+      $exportIds = array_map(function($eid) {return validCardinal($eid);}, $_REQUEST['eids']);
+    } else if (isset($_REQUEST['id'])) {
+      $exportIds = [validCardinal($_REQUEST['id'])];
+    }
+    ZM\Debug("Export IDS". print_r($exportIds, true));
+
+    $filter = isset($_REQUEST['filter']) ? ZM\Filter::parse($_REQUEST['filter']) : null;
+    if ($filter and !count($exportIds)) {
+      $eventsSql = 'SELECT E.Id FROM Events AS E WHERE ';
+      $eventsSql .= $filter->sql();
+      $results = dbQuery($eventsSql);
+      while ($event_row = dbFetchNext($results)) {
+        $exportIds[] = $event_row['Id'];
+      }
+    } else {
+      ZM\Debug("No filter");
+    }
+
+    if ( $exportFile = downloadEvents(
+      $exportIds,
+      $exportFileName,
+      $exportFormat,
+      false#,#Compress
+    ) ) {
+    ajaxResponse(array(
+      'exportFile'=>$exportFile,
+      'exportFormat'=>$exportFormat,
+      'connkey'=>$exportConnkey
+    ));
+
+    } else {
+      ajaxError('Download generation Failed');
+    }
+    break;
+  case 'getselectedtags' :
+    $sql = '
+      SELECT 
+        T.* 
+      FROM Tags 
+        AS T 
+      INNER JOIN Events_Tags 
+        AS ET 
+        ON ET.TagId = T.Id 
+      WHERE ET.EventId = ?
+    ';
+    $values = array($_REQUEST['id']);
+    $response = dbFetchAll($sql, NULL, $values);
+    ajaxResponse(array('response'=>$response));
+    break;
+  case 'addtag' :
+    // Validate once and reuse; $_REQUEST values are strings at best and can be
+    // arrays, so anything non-scalar is rejected outright.
+    $tagId = is_scalar($_REQUEST['tid'] ?? null) ? validCardinal($_REQUEST['tid']) : '';
+    $eventId = is_scalar($_REQUEST['id'] ?? null) ? validCardinal($_REQUEST['id']) : '';
+    if ($tagId === '' or $eventId === '') ajaxError('addtag requires a numeric tid and id');
+
+    $sql = 'INSERT INTO Events_Tags (TagId, EventId, AssignedBy) VALUES (?, ?, ?)';
+    $values = array($tagId, $eventId, $user->Id());
+    $response = dbFetchAll($sql, NULL, $values);
+
+    $sql = 'UPDATE Tags SET LastAssignedDate = NOW() WHERE Id = ?';
+    $values = array($tagId);
+    dbFetchAll($sql, NULL, $values);
+
+    // Record this tag against the user's personal recency order so it
+    // sorts to the top of THEIR dropdown next time, on any device.
+    require_once('includes/TagOrder.php');
+    \ZM\TagOrder::recordUsage($user->Id(), $tagId);
+
+    ajaxResponse(array('response'=>$response));
+    break;
+  case 'removetag' :
+    $tagId = validCardinal($_REQUEST['tid']);
+    dbQuery('DELETE FROM Events_Tags WHERE TagId = ? AND EventId = ?', array($tagId, $_REQUEST['id']));
+    $rowCount = dbNumRows('SELECT * FROM Events_Tags WHERE TagId=?', [ $tagId ]);
+    if ($rowCount < 1) {
+      $response = dbNumRows('DELETE FROM Tags WHERE Id=?', [$tagId]);
+      ajaxResponse(array('response'=>$response));
+    }
+    ajaxResponse();
+    break;
+  case 'file_existence_check' :
+    $fileNameArray = $_REQUEST['file_name_array'] ?? [];
+    if (!is_array($fileNameArray)) ajaxError('The "file_name_array" request parameter is not an array');
+    if (count($fileNameArray) > 100) ajaxError('Too many files requested');
+    $result = [];
+    foreach ($fileNameArray as $fileName) {
+      if (!is_string($fileName) || $fileName === '' || strlen($fileName) > 4096 || strpos($fileName, "\0") !== false) continue;
+
+      // Only allow relative paths under DIR_EXPORTS_DOWNLOAD; reject traversal/absolute paths.
+      $fileName = ltrim($fileName, "/\\");
+      if (preg_match('#(^|[\\/])\.\.([\\/]|$)#', $fileName)) continue;
+      $path = DIR_EXPORTS_DOWNLOAD . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fileName);
+      $result[] = [$fileName, file_exists($path)];
+    }
+    ajaxResponse(array('response'=>$result));
     break;
   }
 } // end if canView('Events')
@@ -145,7 +249,7 @@ if ( canEdit('Events') ) {
     break;
   case 'delete' :
     $Event = new ZM\Event($_REQUEST['id']);
-    if ( ! $Event->Id() ) {
+    if ( !$Event->Id() ) {
       ajaxResponse(array('refreshEvent'=>false, 'refreshParent'=>true, 'message'=> 'Event not found.'));
     } else {
       $Event->delete();
@@ -155,5 +259,5 @@ if ( canEdit('Events') ) {
   } // end switch action
 } // end if canEdit('Events')
 
-ajaxError('Unrecognised action '.$_REQUEST['action'].' or insufficient permissions for user '.$user['Username']);
+ajaxError('Unrecognised action '.validHtmlStr($_REQUEST['action']).' or insufficient permissions for user '.validHtmlStr($user->Username()));
 ?>

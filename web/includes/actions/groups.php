@@ -21,9 +21,9 @@
 // Group view actions
 if ( ($action == 'setgroup') && canView('Groups')) {
   if ( !empty($_REQUEST['gid']) ) {
-    setcookie('zmGroup', validInt($_REQUEST['gid']), time()+3600*24*30*12*10);
+    zm_setcookie('zmGroup', validInt($_REQUEST['gid']));
   } else {
-    setcookie('zmGroup', '', time()-3600*24*2);
+    zm_setcookie('zmGroup', '', time()-3600*24*2);
   }
   $refreshParent = true;
   return;
@@ -41,6 +41,7 @@ if ( $action == 'delete' ) {
   if ( !empty($_REQUEST['gid']) ) {
     foreach ( ZM\Group::find(array('Id'=>$_REQUEST['gid'])) as $Group ) {
       $Group->delete();
+      ZM\AuditAction('delete', 'group', $Group->Id(), 'Name: '.$Group->Name());
     }
   }
   $redirect = '?view=groups';

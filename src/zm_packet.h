@@ -20,27 +20,163 @@
 #ifndef ZM_PACKET_H
 #define ZM_PACKET_H
 
+#include "zm_ffmpeg.h"
+#include "zm_logger.h"
+#include "zm_time.h"
+#include "zm_zone.h"
+
+#include <condition_variable>
+#include <mutex>
+#include <vector>
+
+#if HAS_NLOHMANN_JSON
+#include <nlohmann/json.hpp>
+#endif
+
 extern "C" {
 #include <libavformat/avformat.h>
 }
 
-#ifdef __FreeBSD__
-#include <sys/time.h>
-#endif // __FreeBSD__
-#include "zm_image.h"
+class Image;
 
 class ZMPacket {
-  public:
-  
-    AVPacket  packet;   // Input packet, undecoded
-    AVFrame   *frame;    // Input image, decoded
-    Image     *image;   // Our internal image oject representing this frame
-    struct timeval timestamp;
-  public:
-    AVPacket *av_packet() { return &packet; }
-    ZMPacket( AVPacket *packet, struct timeval *timestamp );
-    explicit ZMPacket( AVPacket *packet );
-    ~ZMPacket();
+ public:
+
+  std::mutex  mutex_;
+  std::unique_lock<std::mutex> our_lck_;
+  // The condition has to be in the packet because it is shared between locks
+  std::condition_variable condition_;
+  bool locked;
+
+  int keyframe;
+  AVStream  *stream;            // Input stream
+  av_packet_ptr packet;         // Input packet, undecoded
+  av_frame_ptr in_frame;        // Input image, decoded Theoretically only filled if needed.
+  av_frame_ptr out_frame;       // output image, Only filled if needed.
+  av_frame_ptr hw_frame;       // output image, Only filled if needed.
+  SystemTimePoint timestamp;
+  Image     *image;
+  Image     *y_image;
+  Image     *analysis_image;
+  int       score;
+  AVMediaType codec_type;
+  int image_index;
+  uint64_t queue_index;         // Monotonic index assigned by PacketQueue on enqueue
+  int codec_imgsize;
+  int64_t   pts;                // pts in the packet can be in another time base. This MUST be in AV_TIME_BASE_Q
+  bool decoded;
+  bool analyzed;
+  std::vector<ZoneStats> zone_stats;
+  std::string  alarm_cause;
+#if HAS_NLOHMANN_JSON
+  nlohmann::json detections;
+#endif
+
+ public:
+  AVPacket *av_packet() { return packet.get(); }
+  AVPacket *set_packet(AVPacket *p) ;
+  AVFrame *av_frame() { return out_frame.get(); }
+  Image *get_image(Image *i = nullptr);
+  Image *set_image(Image *);
+  Image *get_y_image();
+  ssize_t ram();
+
+  int is_keyframe() { return keyframe; };
+  int send_packet(AVCodecContext *ctx);
+  int receive_frame(AVCodecContext *ctx);
+
+  bool needs_hw_transfer(AVCodecContext *ctx);
+  int transfer_hwframe(AVCodecContext *ctx);
+
+  explicit ZMPacket(Image *image, SystemTimePoint tv);
+  explicit ZMPacket(ZMPacket &packet);
+  ZMPacket();
+  ~ZMPacket();
+
+  //AVFrame *get_out_frame(const AVCodecContext *ctx);
+  AVFrame *get_out_frame(int width, int height, AVPixelFormat format);
+  int get_codec_imgsize() { return codec_imgsize; };
+  void notify_all() {
+    this->condition_.notify_all();
+  }
+
+  std::unique_lock<std::mutex> lock();
+  void lock(std::unique_lock<std::mutex> &);
+
+  bool trylock(std::unique_lock<std::mutex>  &lck_);
+  void unlock(std::unique_lock<std::mutex>  &lck_);
+  void unlock();
 };
 
+class ZMPacketLock {
+  public:
+    std::shared_ptr<ZMPacket> packet_;
+  private:
+    std::unique_lock<std::mutex> lck_;
+    bool locked;
+
+  public:
+    //ZMPacketLock(ZMPacketLock &&in) : packet_(in.packet_), lck_(in.lck_), locked(in.locked) { in.lck_ = nullptr; };
+    bool operator!() { return packet_ ? false : true; };
+
+    ZMPacketLock(ZMPacketLock&& in) :
+      packet_(in.packet_),
+      lck_(std::move(in.lck_)),
+      locked(in.locked)
+    {
+      if (this != &in) {
+        in.packet_ = nullptr;
+        in.locked = false;
+      }
+    };
+
+    // Move operator
+    ZMPacketLock& operator=(ZMPacketLock &&in) noexcept {
+      if (this != &in) {
+        packet_ = in.packet_;
+        lck_    = std::move(in.lck_);
+        //lck_    = in.lck_;
+        locked  = in.locked;
+        in.locked = false;
+        in.packet_ = nullptr;
+      }
+      return *this;
+    };
+
+    ZMPacketLock() :
+      packet_(nullptr),
+      locked(false) {};
+
+    explicit ZMPacketLock(std::shared_ptr<ZMPacket> p) :
+      packet_(p),
+      lck_(p->mutex_, std::defer_lock),
+      locked(false)
+    {
+    };
+
+    ~ZMPacketLock() {
+      if (locked and packet_) {
+        // packet_ should never be null
+        Debug(4, "Unlocking in destructor packet %d %p locked: %d owns: %d", packet_->image_index, this, locked, lck_.owns_lock());
+        packet_->unlock(lck_);
+      }
+    };
+
+    void wait() {
+      Debug(4, "packet %d waiting", packet_->image_index);
+      packet_->condition_.wait(lck_);
+    };
+    template<typename Rep, typename Period>
+    void wait_for(const std::chrono::duration<Rep, Period> &timeout) {
+      packet_->condition_.wait_for(lck_, timeout);
+    };
+    void notify_all() { packet_->notify_all(); };
+    void lock() { packet_->lock(lck_); locked = true; };
+    void unlock() { packet_->unlock(lck_); locked = false; };
+    bool trylock() { return locked = packet_->trylock(lck_); };
+    bool is_locked() { 
+      Debug(4, "is_locked packet %d %p locked: %d owns: %d", packet_->image_index, this, locked, lck_.owns_lock());
+      return locked;
+    };
+};
 #endif /* ZM_PACKET_H */

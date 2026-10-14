@@ -22,7 +22,7 @@ class EventsController extends AppController {
   public function beforeFilter() {
     parent::beforeFilter();
     global $user;
-    $canView = (!$user) || ($user['Events'] != 'None');
+    $canView = (!$user) || ($user->Events() != 'None');
     if ( !$canView ) {
       throw new UnauthorizedException(__('Insufficient Privileges'));
       return;
@@ -36,23 +36,118 @@ class EventsController extends AppController {
    * This also creates a thumbnail for each event.
    */
   public function index() {
-    $this->Event->recursive = -1;
+    $this->Event->recursive = 0;
 
     global $user;
     require_once __DIR__ .'/../../../includes/Event.php';
-    $allowedMonitors = $user ? preg_split('@,@', $user['MonitorIds'], NULL, PREG_SPLIT_NO_EMPTY) : null;
+    $allowedMonitors = ($user and $user->unviewableMonitorIds()) ? $user->viewableMonitorIds() : [];
 
-    if ( $allowedMonitors ) {
+    if (count($allowedMonitors)) {
       $mon_options = array('Event.MonitorId' => $allowedMonitors);
     } else {
       $mon_options = '';
     }
 
-    if ( $this->request->params['named'] ) {
-      $this->FilterComponent = $this->Components->load('Filter');
-      $conditions = $this->FilterComponent->buildFilter($this->request->params['named']);
+    $this->FilterComponent = $this->Components->load('Filter');
+    $named_params = $this->request->params['named'];
+    $tag_filter_value = null;
+    $tag_filter_field = null;
+    if ($named_params) {
+      if (isset($named_params['TagId'])) {
+        $tag_filter_value = $named_params['TagId'];
+        $tag_filter_field = 'Id';
+        unset($named_params['TagId']);
+      } else if (isset($named_params['Tag'])) {
+        $tag_filter_value = $named_params['Tag'];
+        $tag_filter_field = 'Name';
+        unset($named_params['Tag']);
+      } else if (isset($named_params['Tags'])) {
+        $tag_filter_value = $named_params['Tags'];
+        $tag_filter_field = 'Name';
+        unset($named_params['Tags']);
+      }
+      # In 1.35.13 we renamed StartTime and EndTime to StartDateTime and EndDateTime.
+      # This hack renames the query string params
+      foreach ( $named_params as $k=>$v ) {
+        if ( false !== strpos($k, 'StartTime') ) {
+          $new_k = preg_replace('/StartTime/', 'StartDateTime', $k);
+          $named_params[$new_k] = $named_params[$k];
+          unset($named_params[$k]);
+        }
+        if ( false !== strpos($k, 'EndTime') ) {
+          $new_k = preg_replace('/EndTime/', 'EndDateTime', $k);
+          $named_params[$new_k] = $named_params[$k];
+          unset($named_params[$k]);
+        }
+      }
+      // Events columns, plus the two names this action resolves itself: DateTime
+      // is a pseudo-attribute turned into an overlap test below, and GroupId is
+      // served by the Groups_Monitors join added further down. Anything else
+      // would reach MySQL as an unknown column and come back as a 500.
+      $valid_fields = array_keys($this->Event->schema());
+      $valid_fields[] = 'DateTime';
+      $valid_fields[] = 'GroupId';
+      $conditions = $this->FilterComponent->buildFilter($named_params, $valid_fields);
+      #ZM\Debug(print_r($conditions, true));
+      # DateTime is a pseudo-attribute meaning "the event was running then", so a
+      # window over it is an overlap test: the event started by the upper bound
+      # and had not finished by the lower bound. Applying the term's own operator
+      # to both StartDateTime and EndDateTime instead makes the upper bound a
+      # containment test, which drops every event that spans the end of the
+      # window -- with continuous recording that is most of them.
+      $datetime_terms = array();
+      foreach ($conditions as $k=>$v) {
+        if ( 0 === strpos($k, 'DateTime') ) {
+          $datetime_terms[$k] = $v;
+          unset($conditions[$k]);
+        }
+      }
+      if ($datetime_terms) {
+        # An event still being written has no EndDateTime, but it is not
+        # unbounded: zmc flushes Length every few seconds, so StartDateTime +
+        # Length is its effective end. Only an event with neither falls back to
+        # NOW(). Treating a missing EndDateTime as "matches any window" instead
+        # made every crash-orphaned event ever recorded match every query.
+        $effective_end = '(CASE'
+          .' WHEN Event.EndDateTime IS NOT NULL THEN Event.EndDateTime'
+          .' WHEN Event.Length > 0 THEN DATE_ADD(Event.StartDateTime, INTERVAL FLOOR(Event.Length) SECOND)'
+          .' ELSE NOW() END)';
+        $ds = $this->Event->getDataSource();
+        foreach ($datetime_terms as $k=>$v) {
+          $op = trim(substr($k, strlen('DateTime')));
+          if ($op == '<' or $op == '<=') {
+            # Upper bound: the event must have started by then.
+            $conditions[] = array('Event.StartDateTime '.$op => $v);
+          } else if ($op == '>' or $op == '>=') {
+            # Lower bound: the event must not have ended before then.
+            $conditions[] = $effective_end.' '.$op.' '.$ds->value($v, 'string');
+          } else {
+            # Anything else (=, !=) still matches against either end.
+            $conditions[] = array('OR' => array(
+              array('Event.StartDateTime '.$op => $v),
+              array('Event.EndDateTime '.$op => $v),
+            ));
+          }
+        }
+      } // end if datetime terms
+      #ZM\Debug(print_r($conditions, true));
+
     } else {
-      $conditions = array();
+      $raw_params = $_REQUEST;
+      if (isset($raw_params['TagId'])) {
+        $tag_filter_value = $raw_params['TagId'];
+        $tag_filter_field = 'Id';
+        unset($raw_params['TagId']);
+      } else if (isset($raw_params['Tag'])) {
+        $tag_filter_value = $raw_params['Tag'];
+        $tag_filter_field = 'Name';
+        unset($raw_params['Tag']);
+      } else if (isset($raw_params['Tags'])) {
+        $tag_filter_value = $raw_params['Tags'];
+        $tag_filter_field = 'Name';
+        unset($raw_params['Tags']);
+      }
+      $conditions = $this->FilterComponent->buildFilter($raw_params);
     }
     $settings = array(
       // https://github.com/ZoneMinder/ZoneMinder/issues/995
@@ -63,11 +158,15 @@ class EventsController extends AppController {
       // with many event APIs. In future, we can
       // make a nice ZM_API_ITEMS_PER_PAGE for all pagination
       // API
+      // ICON: 2023-11-16: MontageReview now uses API and unless we specifiy a limit in params, there should be no limit
+      // TODO: Implement request based limits.
 
-      'limit' => '100',
-      'order' => array('StartTime'),
       'paramType' => 'querystring',
+      'joins'=>[],
+      'contain'=>[]
     );
+
+    $settings['contain'] = [];
     if ( isset($conditions['GroupId']) ) {
       $settings['joins'] = array(
         array(
@@ -78,26 +177,66 @@ class EventsController extends AppController {
           ),
         ),
       );
-      $settings['contain'] = array('Group');
+      $settings['contain'][] = 'Group';
     }
+    if ($tag_filter_value !== null) {
+      #$settings['contain'][] = 'Tag';
+      if (!isset($settings['joins'])) {
+        $settings['joins'] = array();
+      }
+      $settings['joins'][] = array(
+        'table' => 'Events_Tags',
+        'type' => 'inner',
+        'conditions' => array(
+          'Events_Tags.EventId = Event.Id'
+        ),
+      );
+      $settings['joins'][] = array(
+        'table' => 'Tags',
+        'type' => 'inner',
+        'conditions' => array(
+          'Tags.Id = Events_Tags.TagId'
+        ),
+      );
+      if ($tag_filter_field === 'Id') {
+        $tag_ids = is_array($tag_filter_value) ? $tag_filter_value : explode(',', $tag_filter_value);
+        $tag_ids = array_map('intval', $tag_ids);
+        $conditions[] = array('Tags.Id' => $tag_ids);
+      } else {
+        $conditions[] = array('Tags.Name' => $tag_filter_value);
+      }
+      $settings['group'] = 'Event.Id';
+    }
+    if (isset($conditions['Tags.Id'])) {
+      $settings['joins'][] = [
+        'table' => 'Events_Tags',
+        'type'  => 'inner',
+        'conditions' => ['Events_Tags.EventId = Event.Id'],
+      ];
+      $settings['joins'][] = [
+        'table' => 'Tags',
+        'type'  => 'inner',
+        'conditions' => ['Tags.Id = Events_Tags.TagId'],
+      ];
+      //$settings['contain'][] = 'Tag';
+    }
+
     $settings['conditions'] = array($conditions, $mon_options);
 
-    // How many events to return 
-    $this->loadModel('Config');
-    $limit = $this->Config->find('list', array(
-      'conditions' => array('Name' => 'ZM_WEB_EVENTS_PER_PAGE'),
-      'fields' => array('Name', 'Value')
-    ));
     $this->Paginator->settings = $settings;
-    $events = $this->Paginator->paginate('Event');
-
-    // For each event, get the frameID which has the largest score
-    // also add FS path
+    if ($this->request->query('limit') or $this->request->query('page')) {
+      $events = $this->Paginator->paginate('Event');
+    } else {
+      $events = $this->Event->find('all', $settings);
+    }
+    #ZM\Debug(print_r($this->Event->getDataSource()->getLog(false, false), true));
+    // For each event, get the frameID which has the largest score also add FS path
 
     foreach ( $events as $key => $value ) {
-      $EventObj = new ZM\Event($value['Event']['Id']);
-      $maxScoreFrameId = $this->getMaxScoreAlarmFrameId($value['Event']['Id']);
-      $events[$key]['Event']['MaxScoreFrameId'] = $maxScoreFrameId;
+      $EventObj = new ZM\Event($value['Event']);
+      if ($EventObj->MaxScoreFrameId() == NULL) {
+        $events[$key]['Event']['MaxScoreFrameId'] = $this->getMaxScoreAlarmFrameId($value['Event']['Id']);
+      }
       $events[$key]['Event']['FileSystemPath'] = $EventObj->Path();
     }
 
@@ -120,39 +259,58 @@ class EventsController extends AppController {
     }
 
     global $user;
-    $allowedMonitors = $user ? preg_split('@,@', $user['MonitorIds'], NULL, PREG_SPLIT_NO_EMPTY) : null;
+    $allowedMonitors = ($user and $user->unviewableMonitorIds()) ? $user->viewableMonitorIds() : [];
 
-    if ( $allowedMonitors ) {
+    if ( count($allowedMonitors) ) {
       $mon_options = array('Event.MonitorId' => $allowedMonitors);
     } else {
       $mon_options = '';
     }
 
+    $noFrames = $this->request->query('noframes');
+    if ($noFrames=='true')
+      $this->Event->unbindModel(array('hasMany' => array('Frame')));
+
     $options = array('conditions' => array(array('Event.' . $this->Event->primaryKey => $id), $mon_options));
     $event = $this->Event->find('first', $options);
+    $EventObj = new ZM\Event($event['Event']);
+    if (!$EventObj->canView()) {
+      throw new UnauthorizedException(__('Insufficient Privileges'));
+      return;
+    }
 
-    # Get the previous and next events for any monitor
+    # Get the previous and next events for any monitor.
+    # Only Id is used below, so skip the wide SELECT + Monitor/Storage joins + Frames hasMany expansion
+    # that recursive=1 from above would otherwise pull in for each neighbor row.
     $this->Event->id = $id;
-    $event_neighbors = $this->Event->find('neighbors');
-    $event['Event']['Next'] = $event_neighbors['next']['Event']['Id'];
-    $event['Event']['Prev'] = $event_neighbors['prev']['Event']['Id'];
+    $event_neighbors = $this->Event->find('neighbors', array(
+      'fields' => array('Event.Id'),
+      'recursive' => -1,
+    ));
+    $event['Event']['Next'] = isset($event_neighbors['next']) ? $event_neighbors['next']['Event']['Id'] : 0;
+    $event['Event']['Prev'] = isset($event_neighbors['prev']) ? $event_neighbors['prev']['Event']['Id'] : 0;
 
     $event['Event']['fileExists'] = $this->Event->fileExists($event['Event']);
     $event['Event']['fileSize'] = $this->Event->fileSize($event['Event']);
-
-    $EventObj = new ZM\Event($id);
     $event['Event']['FileSystemPath'] = $EventObj->Path();
 
     # Also get the previous and next events for the same monitor
     $event_monitor_neighbors = $this->Event->find('neighbors', array(
-      'conditions'=>array('Event.MonitorId'=>$event['Event']['MonitorId'])
+      'fields' => array('Event.Id'),
+      'recursive' => -1,
+      'conditions' => array('Event.MonitorId' => $event['Event']['MonitorId']),
     ));
-    $event['Event']['NextOfMonitor'] = $event_monitor_neighbors['next']['Event']['Id'];
-    $event['Event']['PrevOfMonitor'] = $event_monitor_neighbors['prev']['Event']['Id'];
+    $event['Event']['NextOfMonitor'] = isset($event_monitor_neighbors['next']) ? $event_monitor_neighbors['next']['Event']['Id'] : 0;
+    $event['Event']['PrevOfMonitor'] = isset($event_monitor_neighbors['prev']) ? $event_monitor_neighbors['prev']['Event']['Id'] : 0;
   
     $this->loadModel('Frame');
-    $event['Event']['MaxScoreFrameId'] = $this->Frame->findByEventid($id,'FrameId',array('Score'=>'desc','FrameId'=>'asc'))['Frame']['FrameId'];
-    $event['Event']['AlarmFrameId'] = $this->Frame->findByEventidAndType($id,'Alarm')['Frame']['FrameId'];
+    $maxScoreFrame = $this->Frame->findByEventid($id, 'FrameId', array('Score'=>'desc','FrameId'=>'asc'));
+
+    $event['Event']['MaxScoreFrameId'] = $maxScoreFrame ? $maxScoreFrame['Frame']['FrameId'] : null;
+    $alarmFrame = $this->Frame->findByEventidAndType($id, 'Alarm');
+    ZM\Debug(print_r($alarmFrame, true));
+
+    $event['Event']['AlarmFrameId'] = $alarmFrame ? $alarmFrame['Frame']['FrameId'] : null;
 
     $this->set(array(
       'event' => $event,
@@ -169,7 +327,7 @@ class EventsController extends AppController {
   public function add() {
 
     global $user;
-    $canEdit = (!$user) || ($user['Events'] == 'Edit');
+    $canEdit = (!$user) || ($user->Events() == 'Edit');
     if ( !$canEdit ) {
       throw new UnauthorizedException(__('Insufficient privileges'));
       return;
@@ -195,7 +353,7 @@ class EventsController extends AppController {
   public function edit($id = null) {
 
     global $user;
-    $canEdit = (!$user) || ($user['Events'] == 'Edit');
+    $canEdit = (!$user) || ($user->Events() == 'Edit');
     if ( !$canEdit ) {
       throw new UnauthorizedException(__('Insufficient privileges'));
       return;
@@ -205,6 +363,18 @@ class EventsController extends AppController {
 
     if ( !$this->Event->exists($id) ) {
       throw new NotFoundException(__('Invalid event'));
+    }
+
+    # Events=Edit is coarse. Enforce the per-monitor ACL too, otherwise a user
+    # denied a monitor can still mutate that monitor's events by direct Id.
+    $this->Event->recursive = -1;
+    $event = $this->Event->find('first', array(
+      'conditions' => array('Event.' . $this->Event->primaryKey => $id)
+    ));
+    $EventObj = new ZM\Event($event['Event']);
+    if ( !$EventObj->canEdit() ) {
+      throw new UnauthorizedException(__('Insufficient Privileges'));
+      return;
     }
 
     if ( $this->Event->save($this->request->data) ) {
@@ -228,7 +398,7 @@ class EventsController extends AppController {
    */
   public function delete($id = null) {
     global $user;
-    $canEdit = (!$user) || ($user['Events'] == 'Edit');
+    $canEdit = (!$user) || ($user->Events() == 'Edit');
     if ( !$canEdit ) {
       throw new UnauthorizedException(__('Insufficient privileges'));
       return;
@@ -238,6 +408,19 @@ class EventsController extends AppController {
       throw new NotFoundException(__('Invalid event'));
     }
     $this->request->allowMethod('post', 'delete');
+
+    # Events=Edit is coarse. Enforce the per-monitor ACL too, otherwise a user
+    # denied a monitor can still delete that monitor's events by direct Id.
+    $this->Event->recursive = -1;
+    $event = $this->Event->find('first', array(
+      'conditions' => array('Event.' . $this->Event->primaryKey => $id)
+    ));
+    $EventObj = new ZM\Event($event['Event']);
+    if ( !$EventObj->canEdit() ) {
+      throw new UnauthorizedException(__('Insufficient Privileges'));
+      return;
+    }
+
     if ( $this->Event->delete() ) {
       //$this->loadModel('Frame');
       //$this->Event->Frame->delete();
@@ -262,7 +445,7 @@ class EventsController extends AppController {
         }
         $matches = NULL;
         $value = preg_replace('/^\s?interval\s?/i', '', $value);
-        if (preg_match('/^(?P<expr>[ -.:0-9\']+)\s+(?P<unit>[_a-z]+)$/i', trim($value), $matches) !== 1) {
+        if (preg_match('/^(?P<expr>[ \-.:0-9]+)\s+(?P<unit>[_a-z]+)$/i', trim($value), $matches) !== 1) {
           throw new Exception('Invalid interval: ' . $value);
         }
         $expr = trim($matches['expr']);
@@ -295,7 +478,7 @@ class EventsController extends AppController {
     $matches = NULL;
     // https://dev.mysql.com/doc/refman/5.5/en/expressions.html#temporal-intervals
     // Examples: `'1-1' YEAR_MONTH`, `'-1 10' DAY_HOUR`, `'1.999999' SECOND_MICROSECOND`
-    if (preg_match('/^(?P<expr>[ -.:0-9\']+)\s+(?P<unit>[_a-z]+)$/i', trim($interval), $matches) !== 1) {
+    if (preg_match('/^(?P<expr>[ \-.:0-9]+)\s+(?P<unit>[_a-z]+)$/i', trim($interval), $matches) !== 1) {
       throw new Exception('Invalid interval: ' . $interval);
     }
     $expr = trim($matches['expr']);
@@ -309,14 +492,11 @@ class EventsController extends AppController {
     } else {
       $conditions = array();
     } 
-    array_push($conditions, array("StartTime >= DATE_SUB(NOW(), INTERVAL $expr $unit)"));
+    array_push($conditions, array("StartDateTime >= DATE_SUB(NOW(), INTERVAL $expr $unit)"));
     $query = $this->Event->find('all', array(
-                                             'fields' => array(
-                                                               'MonitorId',
-                                                               'COUNT(*) AS Count',
-                                                               ),
-                                             'conditions' => $conditions,
-                                             'group' => 'MonitorId',
+      'fields' => array('MonitorId', 'COUNT(*) AS Count'),
+      'conditions' => $conditions,
+      'group' => 'MonitorId',
     ));
 
     foreach ($query as $result) {
@@ -402,15 +582,27 @@ class EventsController extends AppController {
       throw new NotFoundException(__('Invalid event'));
     }
 
-    // Get the current value of Archive
+    // Toggling Archived mutates state, so restrict to state-changing verbs (not CSRF-able GET).
+    $this->request->allowMethod('post', 'put');
+
     $archived = $this->Event->find('first', array(
-      'fields' => array('Event.Archived'),
       'conditions' => array('Event.Id' => $id)
     ));
+    $EventObj = new ZM\Event($archived['Event']);
+
     // If 0, 1, if 1, 0
     $archiveVal = (($archived['Event']['Archived'] == 0) ? 1 : 0);
 
-    // Save the new value 
+    // Archiving protects an event from purge, so any user who can view the event may do it.
+    // Un-archiving makes it eligible for purge again, so that requires edit permission.
+    // Both canView() and canEdit() enforce the per-monitor object-level ACL.
+    $allowed = $archiveVal ? $EventObj->canView() : $EventObj->canEdit();
+    if ( !$allowed ) {
+      throw new UnauthorizedException(__('Insufficient Privileges'));
+      return;
+    }
+
+    // Save the new value
     $this->Event->id = $id;
     $this->Event->saveField('Archived', $archiveVal);
 

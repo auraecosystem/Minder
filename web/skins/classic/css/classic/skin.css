@@ -64,11 +64,14 @@ p {
     font-weight: normal;
 }
 
-
 a:link,
 a:visited {
     color: #7f7fb2;
     text-decoration: none;
+}
+
+a {
+  cursor: pointer;
 }
 
 a:hover {
@@ -115,47 +118,6 @@ hr {
     border: 0;
     color: #7f7fb2;
     background-color: #7f7fb2;
-}
-
-/*
- * Tabbed headings
- */
-ul.tabList {
-    float: left;
-    list-style: none;
-    padding: 0;
-    margin: 0 0 -4px 0;
-    white-space: nowrap;
-    text-align: left;
-}
-
-ul.tabList li {
-    float: left;
-    border: 1px solid;
-    color: #333333;
-    border: #7f7fb2 solid 1px;
-    border-bottom-width: 0;
-    margin: 0 2px 0 0;
-    background: #dddddd;
-    text-align: center;
-    padding: 3px 4px;
-}
-
-ul.tabList li a {
-    text-decoration: none;
-}
-
-ul.tabList li:hover {
-    background-color: #eeeeee;
-}
-
-ul.tabList li.active {
-    background-color: #ffffff;
-    border-bottom: #7f7fb2 dotted 1px;
-}
-
-ul.tabList li.active a {
-    font-weight: bold;
 }
 
 /*
@@ -377,7 +339,6 @@ th.table-th-sort-rev span.table-th-sort-span {
 }
 
 #content {
-    width: 96%;
     margin: 0 auto 8px auto;
     line-height: 130%;
     text-align: center;
@@ -396,14 +357,6 @@ th.table-th-sort-rev span.table-th-sort-span {
     margin-bottom: 8px;
 }
 
-/*
-#contentDiv {
-    margin: 0 auto 8px;
-    line-height: 140%;
-    text-align: center;
-}
-*/
-
 #content > input[type=submit],
 #content > input[type=button],
 #content > button,
@@ -416,6 +369,7 @@ th.table-th-sort-rev span.table-th-sort-span {
 #content table button,
 #content table .btn-primary {
     margin-top: 0;
+    margin-right: 4px;
 }
 
 #contentButtons {
@@ -490,6 +444,10 @@ margin-left: 0px;
 
 .nav-pills > li > a {
 	border-radius: 0;
+}
+
+.nav-pills .nav-link.active, .nav-pills .show>.nav-link {
+  background-color: #337ab7;
 }
 
 button,

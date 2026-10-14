@@ -19,32 +19,83 @@
 //
 
 // Monitor edit actions, monitor id derived, require edit permissions for that monitor
-if ( ! canEdit('Monitors') ) {
-  ZM\Warning('Monitor actions require Monitors Permissions');
-  return;
-}
 
-if ( $action == 'monitor' ) {
+require_once('includes/Monitor.php');
+require_once('includes/Zone.php');
+
+global $error_message;
+
+if ($action == 'save') {
   $mid = 0;
-  if ( !empty($_REQUEST['mid']) ) {
+  if (!empty($_REQUEST['mid'])) {
     $mid = validInt($_REQUEST['mid']);
-    if ( ZM_OPT_X10 ) {
-      $x10Monitor = dbFetchOne('SELECT * FROM TriggersX10 WHERE MonitorId=?', NULL, array($mid));
-      if ( !$x10Monitor )
-        $x10Monitor = array();
-    }
-    if ( !canEdit('Monitors', $mid) ) {
+    if (!canEdit('Monitors', $mid)) {
       ZM\Warning('You do not have permission to edit this monitor');
       return;
     }
-  } else {
-    if ( ZM_OPT_X10 ) {
-      $x10Monitor = array();
+    if (ZM_OPT_X10) {
+      $x10Monitor = dbFetchOne('SELECT * FROM TriggersX10 WHERE MonitorId=?', NULL, array($mid));
+      if (!$x10Monitor) $x10Monitor = array();
     }
-    if ( $user['MonitorIds'] ) {
+  } else {
+    if (!canCreate('Monitors')) {
+      ZM\Warning('Monitor actions require Monitors Create Permissions');
+      return;
+    }
+    if ($user->unviewableMonitorIds()) {
       ZM\Warning('You are restricted to certain monitors so cannot add a new one.');
       return;
     }
+    if (ZM_OPT_X10) {
+      $x10Monitor = array();
+    }
+    if (!empty($_REQUEST['newMonitor']['Id'])) { 
+      // Reuse existing but deleted monitor
+      $mid = validCardinal($_REQUEST['newMonitor']['Id']);
+    }
+  }
+
+  # For convenience
+  $newMonitor = $_REQUEST['newMonitor'];
+
+  # Validate Device path to prevent command injection (CVE-worthy).
+  # Only Local monitors pass Device to a shell; for other Types the field
+  # is unused and may legitimately hold legacy values (e.g. an RTSP URL).
+  if (!empty($newMonitor['Device']) and isset($newMonitor['Type']) and $newMonitor['Type'] == 'Local') {
+    $newMonitor['Device'] = validDevicePath($newMonitor['Device']);
+    if ($newMonitor['Device'] === '') {
+      $error_message .= 'Invalid device path. Must be a valid /dev/ path (e.g. /dev/video0).</br>';
+      return;
+    }
+  }
+
+  if (!$newMonitor['ManufacturerId'] and ($newMonitor['Manufacturer'] != '')) {
+    # Need to add a new Manufacturer entry
+    $newManufacturer = ZM\Manufacturer::find_one(array('Name'=>$newMonitor['Manufacturer']));
+    if (!$newManufacturer) {
+      $newManufacturer = new ZM\Manufacturer();
+      if (!$newManufacturer->save(array('Name'=>$newMonitor['Manufacturer']))) {
+        $error_message .= "Error saving new Manufacturer: " . $newManufacturer->get_last_error().'</br>';
+      }
+    }
+    $newMonitor['ManufacturerId'] = $newManufacturer->Id();
+    unset($newMonitor['Manufacturer']);
+  }
+
+  if (!$newMonitor['ModelId'] and ($newMonitor['Model'] != '')) {
+    # Need to add a new Model entry
+    $newModel = ZM\Model::find_one(array('Name'=>$newMonitor['Model']));
+    if (!$newModel) {
+      $newModel = new ZM\Model();
+      if (!$newModel->save(array(
+            'Name'=>$newMonitor['Model'],
+            'ManufacturerId'=>$newMonitor['ManufacturerId']
+      ))) {
+        $error_message .= "Error saving new Model: " . $newModel->get_last_error().'</br>';
+      }
+    }
+    $newMonitor['ModelId'] = $newModel->Id();
+    unset($newMonitor['Model']);
   }
 
   $monitor = new ZM\Monitor($mid);
@@ -54,107 +105,145 @@ if ( $action == 'monitor' ) {
       'Triggers' => array(),
       'Controllable' => 0,
       'TrackMotion' => 0,
+      'ModectDuringPTZ' =>  0,
       'Enabled' => 0,
+      'DecodingEnabled' => 0,
+      'RTSP2WebEnabled' => 0,
+      'Go2RTCEnabled' => 0,
+      'JanusEnabled' => 0,
+      'JanusAudioEnabled' => 0,
+      'Restream' => 0,
+//       'Janus_RTSP_Session_Timeout' => 0,
       'Exif' => 0,
       'RTSPDescribe' => 0,
       'V4LMultiBuffer'  => '',
+      'WallClockTimestamps' => '',
       'RecordAudio' => 0,
       'Method' => 'raw',
       'GroupIds'  =>  array(),
-      'LinkedMonitors'  => array() 
+      'LinkedMonitors'  => array(),
+      'MQTT_Enabled'  =>  0,
+      'RTSPServer' => 0,
+      'SectionLengthWarn' => 0,
+      'SOAP_wsa_compl' => 0 
       );
 
   # Checkboxes don't return an element in the POST data, so won't be present in newMonitor.
-  # So force a value for these fields
-  foreach ( $types as $field => $value ) {
-    if ( ! isset($_REQUEST['newMonitor'][$field] ) ) {
-      $_REQUEST['newMonitor'][$field] = $value;
+  # So force a value for these fields.
+  # Deleted is deliberately NOT in this list: its checkbox is an "undelete"
+  # action, present only on a deleted monitor and only ever sending 0. Forcing
+  # a default of 0 when it is absent undeleted the monitor on every save.
+  foreach ($types as $field => $value) {
+    if (!isset($newMonitor[$field])) {
+      $newMonitor[$field] = $value;
     }
   } # end foreach type
 
-  if ( $_REQUEST['newMonitor']['ServerId'] == 'auto' ) {
-    $_REQUEST['newMonitor']['ServerId'] = dbFetchOne(
+  if (isset($newMonitor['ServerId']) and ($newMonitor['ServerId'] == 'auto')) {
+    $newMonitor['ServerId'] = dbFetchOne(
       'SELECT Id FROM Servers WHERE Status=\'Running\' ORDER BY FreeMem DESC, CpuLoad ASC LIMIT 1', 'Id');
-    ZM\Logger::Debug('Auto selecting server: Got ' . $_REQUEST['newMonitor']['ServerId']);
-    if ( ( !$_REQUEST['newMonitor'] ) and defined('ZM_SERVER_ID') ) {
-      $_REQUEST['newMonitor']['ServerId'] = ZM_SERVER_ID;
-      ZM\Logger::Debug('Auto selecting server to ' . ZM_SERVER_ID);
+    ZM\Debug('Auto selecting server: Got ' . $newMonitor['ServerId']);
+    if ((!$newMonitor['ServerId']) and defined('ZM_SERVER_ID')) {
+      $newMonitor['ServerId'] = ZM_SERVER_ID;
+      ZM\Debug('Auto selecting server to '.ZM_SERVER_ID);
     }
   }
+  if (!empty($newMonitor['ManufacturerId']) and empty($newMonitor['Manufacturer']))
+    unset($newMonitor['Manufacturer']);
+  if (!empty($newMonitor['ModelId']) and empty($newMonitor['Model']))
+    unset($newMonitor['Model']);
 
-  $changes = $monitor->changes($_REQUEST['newMonitor'], $types);
+  $changes = $monitor->changes($newMonitor);
+  ZM\Debug('Changes: '. print_r($changes, true));
   $restart = false;
 
-  if ( count($changes) ) {
-    if ( $monitor->Id() ) {
+  if (count($changes)) {
+    // monitor->Id() has a value when the db record exists
+    if ($monitor->Id()) {
+      if ($monitor->Deleted() and empty($_REQUEST['mid'])) {
+        # We are saving a new monitor with a specified Id and the Id is used in a deleted record.
+        # Undelete it so that it is visible.
+        # Editing an existing deleted monitor (mid in the request) must NOT
+        # undelete it - that only happens via the explicit undelete checkbox,
+        # which arrives as newMonitor[Deleted]=0 and so shows up in $changes.
+        $monitor->Deleted(false);
+      }
 
       # If we change anything that changes the shared mem size, zma can complain.  So let's stop first.
-      if ( $monitor->Type() != 'WebSite' ) {
-        $monitor->zmaControl('stop');
+      if ($monitor->Type() != 'WebSite') {
         $monitor->zmcControl('stop');
-        if ( $monitor->Controllable() ) {
+        if ($monitor->Controllable()) {
           $monitor->sendControlCommand('stop');
         }
       }
 
-      # These are used in updating zones
-      $oldW = $monitor->Width();
-      $oldH = $monitor->Height();
+      $oldMonitor = clone $monitor;
 
-      if ( $monitor->save($changes) ) {
+      if ($monitor->save($changes)) {
+        # If the name has changed, it must also be changed in all storage areas.
+        if (isset($changes['Name'])) {
+          $saferName = basename($newMonitor['Name']);
+          $oldLinkPath = $oldMonitor->Storage()->Path().'/'.basename($oldMonitor->Name());
+          $oldLinkPathFound = false;
+          require_once('includes/Storage.php');
+          foreach (ZM\Storage::find() as $Storage) {
+            # Let's remove old symlinks
+            $storagePath = realpath($Storage->Path()) .'/';
+            $dirStoragePath = opendir($storagePath);
+            if($dirStoragePath === false) {
+              ZM\Warning("Unable to check and delete old symlinks to monitor with ID=".$monitor->Id()." in the '".$Storage->Name()."' storage because the path to the storage is missing or unreadable.");
+            } else {
+              while (($file = readdir($dirStoragePath)) !== false) {
+                $linkPath = $storagePath . $file;
+                if (is_link($linkPath)) {
+                  $absolutePath = realpath($linkPath);
+                  if ($oldLinkPath == $linkPath) $oldLinkPathFound = true;
+                  if ($absolutePath == $Storage->Path().'/'.$mid) {
+                    ZM\Debug("Deleting old link in storage '" . $Storage->Name() . "' " . $linkPath);
+                    unlink($linkPath);
+                  }
+                }
+              } 
+              closedir($dirStoragePath);
+            }
 
-        // Groups will be added below
-        if ( isset($changes['Name']) or isset($changes['StorageId']) ) {
-          // creating symlinks when symlink already exists reports errors, but is perfectly ok
-          error_reporting(0);
-
-          $OldStorage = $monitor->Storage();
-          $saferOldName = basename($monitor->Name());
-          if ( file_exists($OldStorage->Path().'/'.$saferOldName) )
-            unlink($OldStorage->Path().'/'.$saferOldName);
-
-          $NewStorage = new ZM\Storage($_REQUEST['newMonitor']['StorageId']);
-          if ( !file_exists($NewStorage->Path().'/'.$mid) ) {
-            if ( !mkdir($NewStorage->Path().'/'.$mid, 0755) ) {
-              ZM\Error('Unable to mkdir ' . $NewStorage->Path().'/'.$mid);
+            # Let's create new symlinks
+            $dir = $Storage->Path().'/'.$mid;
+            if (is_dir($dir) && (string)$saferName !== (string)$mid) { # Let's check if there is a folder with events in this storage
+              $linkPath = $Storage->Path().'/'.$saferName;
+              if (!is_link($linkPath) && !@symlink($mid, $linkPath)) {
+                # It is necessary to check is_link() to avoid unnecessary warnings, since different repositories can have the same path and this is not prohibited by the configuration.
+                ZM\Warning('Unable to symlink in storage "' . $Storage->Name() . '" ' . $dir . ' to ' . $linkPath);
+              }
             }
           }
-          $saferNewName = basename($_REQUEST['newMonitor']['Name']);
-          $link_path = $NewStorage->Path().'/'.$saferNewName;
-          if ( !symlink($NewStorage->Path().'/'.$mid, $link_path) ) {
-            if ( ! ( file_exists($link_path) and is_link($link_path) ) ) {
-              ZM\Warning('Unable to symlink ' . $NewStorage->Path().'/'.$mid . ' to ' . $NewStorage->Path().'/'.$saferNewName);
-            }
+          if (!$oldLinkPathFound) {
+            ZM\Debug("Old link at '" . $oldLinkPath . "' was not found in any of the storages");
           }
-        } // end if Name or Storage Area Change
+        }
 
-        if ( isset($changes['Width']) || isset($changes['Height']) ) {
-          $newW = $_REQUEST['newMonitor']['Width'];
-          $newH = $_REQUEST['newMonitor']['Height'];
+        if (isset($changes['Width']) || isset($changes['Height'])) {
+          $newW = $newMonitor['Width'];
+          $newH = $newMonitor['Height'];
 
           $zones = dbFetchAll('SELECT * FROM Zones WHERE MonitorId=?', NULL, array($mid));
 
-          if ( ($newW == $oldH) and ($newH == $oldW) ) {
+          // Zone coords are stored as percentages, so they don't need rescaling
+          // on resolution change. Only handle rotation (swap x/y) and rescale
+          // threshold pixel counts.
+          $newA = $newW * $newH;
+          $oldA = $oldMonitor->Width() * $oldMonitor->Height();
+
+          if ( ($newW == $oldMonitor->Height()) and ($newH == $oldMonitor->Width()) ) {
+            // Rotation: swap x,y percentage coords
             foreach ( $zones as $zone ) {
-              $newZone = $zone;
-              # Rotation, no change to area etc just swap the coords
               $newZone = $zone;
               $points = coordsToPoints($zone['Coords']);
               for ( $i = 0; $i < count($points); $i++ ) {
                 $x = $points[$i]['x'];
                 $points[$i]['x'] = $points[$i]['y'];
                 $points[$i]['y'] = $x;
-
-                if ( $points[$i]['x'] > ($newW-1) ) {
-                  ZM\Warning("Correcting x {$points[$i]['x']} > $newW of zone {$newZone['Name']} as it extends outside the new dimensions");
-                  $points[$i]['x'] = ($newW-1);
-                }
-                if ( $points[$i]['y'] > ($newH-1) ) {
-                  ZM\Warning("Correcting y {$points[$i]['y']} $newH of zone {$newZone['Name']} as it extends outside the new dimensions");
-                  $points[$i]['y'] = ($newH-1);
-                }
               }
-
               $newZone['Coords'] = pointsToCoords($points);
               $changes = getFormChanges($zone, $newZone, $types);
 
@@ -163,33 +252,17 @@ if ( $action == 'monitor' ) {
                   array($mid, $zone['Id']));
               }
             } # end foreach zone
-          } else {
-            $newA = $newW * $newH;
-            $oldA = $oldW * $oldH;
-
+          } else if ($oldA > 0 && $newA != $oldA) {
+            // Non-rotation resize: coords stay the same (percentages),
+            // but rescale threshold pixel counts by area ratio
             foreach ( $zones as $zone ) {
               $newZone = $zone;
-              $points = coordsToPoints($zone['Coords']);
-              for ( $i = 0; $i < count($points); $i++ ) {
-                $points[$i]['x'] = intval(($points[$i]['x']*($newW-1))/($oldW-1));
-                $points[$i]['y'] = intval(($points[$i]['y']*($newH-1))/($oldH-1));
-                if ( $points[$i]['x'] > ($newW-1) ) {
-                  ZM\Warning("Correcting x of zone {$newZone['Name']} as it extends outside the new dimensions");
-                  $points[$i]['x'] = ($newW-1);
-                }
-                if ( $points[$i]['y'] > ($newH-1) ) {
-                  ZM\Warning("Correcting y of zone {$newZone['Name']} as it extends outside the new dimensions");
-                  $points[$i]['y'] = ($newH-1);
-                }
-              }
-              $newZone['Coords'] = pointsToCoords($points);
-              $newZone['Area'] = intval(round(($zone['Area']*$newA)/$oldA));
-              $newZone['MinAlarmPixels'] = intval(round(($newZone['MinAlarmPixels']*$newA)/$oldA));
-              $newZone['MaxAlarmPixels'] = intval(round(($newZone['MaxAlarmPixels']*$newA)/$oldA));
-              $newZone['MinFilterPixels'] = intval(round(($newZone['MinFilterPixels']*$newA)/$oldA));
-              $newZone['MaxFilterPixels'] = intval(round(($newZone['MaxFilterPixels']*$newA)/$oldA));
-              $newZone['MinBlobPixels'] = intval(round(($newZone['MinBlobPixels']*$newA)/$oldA));
-              $newZone['MaxBlobPixels'] = intval(round(($newZone['MaxBlobPixels']*$newA)/$oldA));
+              $newZone['MinAlarmPixels'] = intval(round(($zone['MinAlarmPixels']*$newA)/$oldA));
+              $newZone['MaxAlarmPixels'] = intval(round(($zone['MaxAlarmPixels']*$newA)/$oldA));
+              $newZone['MinFilterPixels'] = intval(round(($zone['MinFilterPixels']*$newA)/$oldA));
+              $newZone['MaxFilterPixels'] = intval(round(($zone['MaxFilterPixels']*$newA)/$oldA));
+              $newZone['MinBlobPixels'] = intval(round(($zone['MinBlobPixels']*$newA)/$oldA));
+              $newZone['MaxBlobPixels'] = intval(round(($zone['MaxBlobPixels']*$newA)/$oldA));
 
               $changes = getFormChanges($zone, $newZone, $types);
 
@@ -200,6 +273,9 @@ if ( $action == 'monitor' ) {
             } // end foreach zone
           } // end if rotation or just size change
         } // end if changes in width or height
+        ZM\AuditAction('update', 'monitor', $mid, 'Changed: '.implode(', ', array_keys($changes)));
+      } else {
+        $error_message .= $monitor->get_last_error();
       } // end if successful save
       $restart = true;
     } else { // new monitor
@@ -207,22 +283,56 @@ if ( $action == 'monitor' ) {
 # FIXME This is actually a race condition. Should lock the table.
       $maxSeq = dbFetchOne('SELECT MAX(Sequence) AS MaxSequence FROM Monitors', 'MaxSequence');
       $changes['Sequence'] = $maxSeq+1;
+      if ( $mid ) $changes['Id'] = $mid; # mid specified in request, doesn't exist in db, will re-use slot
 
-      if ( $monitor->save($changes) ) {
+
+      if ( $monitor->insert($changes) ) {
         $mid = $monitor->Id();
-        $zoneArea = $_REQUEST['newMonitor']['Width'] * $_REQUEST['newMonitor']['Height'];
-        dbQuery("INSERT INTO Zones SET MonitorId = ?, Name = 'All', Type = 'Active', Units = 'Percent', NumCoords = 4, Coords = ?, Area=?, AlarmRGB = 0xff0000, CheckMethod = 'Blobs', MinPixelThreshold = 25, MinAlarmPixels=?, MaxAlarmPixels=?, FilterX = 3, FilterY = 3, MinFilterPixels=?, MaxFilterPixels=?, MinBlobPixels=?, MinBlobs = 1", array( $mid, sprintf( "%d,%d %d,%d %d,%d %d,%d", 0, 0, $_REQUEST['newMonitor']['Width']-1, 0, $_REQUEST['newMonitor']['Width']-1, $_REQUEST['newMonitor']['Height']-1, 0, $_REQUEST['newMonitor']['Height']-1 ), $zoneArea, intval(($zoneArea*3)/100), intval(($zoneArea*75)/100), intval(($zoneArea*3)/100), intval(($zoneArea*75)/100), intval(($zoneArea*2)/100)  ) );
-        //$view = 'none';
-        $Storage = $monitor->Storage();
-
-				error_reporting(0);
-        mkdir($Storage->Path().'/'.$mid, 0755);
-        $saferName = basename($_REQUEST['newMonitor']['Name']);
-        symlink($mid, $Storage->Path().'/'.$saferName);
-
+        // Zone coords are now stored as percentages (0-100)
+        $zoneWidth = $newMonitor['Width'];
+        $zoneHeight = $newMonitor['Height'];
+        if (isset($newMonitor['Orientation']) &&
+            ($newMonitor['Orientation'] == 'ROTATE_90' || $newMonitor['Orientation'] == 'ROTATE_270')) {
+          $zoneWidth = $newMonitor['Height'];
+          $zoneHeight = $newMonitor['Width'];
+        }
+        $zoneArea = $zoneWidth * $zoneHeight;
+        $zone = new ZM\Zone();
+        if (!$zone->save(['MonitorId'=>$monitor->Id(), 'Name'=>'All',
+          'Units'=>'Percent',
+          'Coords'=>'0.00,0.00 100.00,0.00 100.00,100.00 0.00,100.00',
+          'Area'=>10000,
+          'MinAlarmPixels'=>intval(($zoneArea*.05)/100),
+          'MaxAlarmPixels'=>intval(($zoneArea*75)/100),
+          'MinFilterPixels'=>intval(($zoneArea*.05)/100),
+          'MaxFilterPixels'=>intval(($zoneArea*75)/100),
+          'MinBlobPixels'=>intval(($zoneArea*.05)/100)
+        ])) {
+          $error_message .= $zone->get_last_error();
+          ZM\Error('Error adding zone:' . $error_message);
+        }
+        ZM\AuditAction('create', 'monitor', $mid, 'Name: '.($newMonitor['Name'] ?? ''));
       } else {
-        ZM\Error('Error saving new Monitor.');
+        $dbError = $monitor->get_last_error();
+        $error_message .= 'Error saving new Monitor: '.($dbError ? $dbError : 'unknown database error').'<br/>';
+        ZM\Error('Error saving new Monitor: '.$dbError);
         return;
+      }
+    }
+
+    $Storage = $monitor->Storage();
+    $mid_dir = $Storage->Path().'/'.$mid;
+    if (!file_exists($mid_dir)) {
+      if (!@mkdir($mid_dir, 0755)) {
+        ZM\Error('Unable to mkdir '.$Storage->Path().'/'.$mid);
+      }
+    }
+
+    $saferName = basename($newMonitor['Name']);
+    $link_path = $Storage->Path().'/'.$saferName;
+    if (((string)$saferName !== (string)$mid) and !@symlink($mid, $link_path)) {
+      if (!(file_exists($link_path) and is_link($link_path))) {
+        ZM\Warning('Unable to symlink ' . $Storage->Path().'/'.$mid . ' to ' . $link_path);
       }
     }
 
@@ -235,7 +345,7 @@ if ( $action == 'monitor' ) {
 
     $restart = true;
   } else {
-    ZM\Logger::Debug('No action due to no changes to Monitor');
+    ZM\Debug('No action due to no changes to Monitor');
   } # end if count(changes)
 
   if ( !$mid ) {
@@ -249,7 +359,7 @@ if ( $action == 'monitor' ) {
     if ( count($x10Changes) ) {
       if ( $x10Monitor && isset($_REQUEST['newX10Monitor']) ) {
         dbQuery('UPDATE TriggersX10 SET '.implode(', ', $x10Changes).' WHERE MonitorId=?', array($mid));
-      } elseif ( !$user['MonitorIds'] ) {
+      } else if ( !$user->unviewableMonitorIds() ) {
         if ( !$x10Monitor ) {
           dbQuery('INSERT INTO TriggersX10 SET MonitorId = ?, '.implode(', ', $x10Changes), array($mid));
         } else {
@@ -261,10 +371,8 @@ if ( $action == 'monitor' ) {
   } # end if ZM_OPT_X10
 
   if ( $restart ) {
-    if ( $monitor->Function() != 'None' and $monitor->Type() != 'WebSite' ) {
+    if ( $monitor->Capturing() != 'None' and $monitor->Type() != 'WebSite' and !$monitor->Deleted()) {
       $monitor->zmcControl('start');
-      if ( ($monitor->Function() == 'Modect' or $monitor->Function() == 'Mocord') and $monitor->Enabled() )
-        $monitor->zmaControl('start');
 
       if ( $monitor->Controllable() ) {
         $monitor->sendControlCommand('start');
@@ -272,9 +380,9 @@ if ( $action == 'monitor' ) {
     }
     // really should thump zmwatch and maybe zmtrigger too.
     //daemonControl( 'restart', 'zmwatch.pl' );
-    $refreshParent = true;
   } // end if restart
-  $view = 'none';
+  if (!$error_message)
+    $redirect = '?view=console';
 } else {
   ZM\Warning("Unknown action $action in Monitor");
 } // end if action == Delete

@@ -20,6 +20,7 @@ our @ISA = qw(Exporter ZoneMinder::Base);
 our %EXPORT_TAGS = (
     functions => [ qw(
       executeShellCommand
+      findDbCommand
       getCmdFormat
       runCommand
       setFileOwner
@@ -28,6 +29,14 @@ our %EXPORT_TAGS = (
       makePath
       jsonEncode
       jsonDecode
+      jsonLoad
+      systemStatus
+      packageControl
+      daemonControl
+      parseNameEqualsValueToHash
+      hash_diff
+      acquireExclusiveLock
+      lockHolderPid
       ) ]
     );
 push( @{$EXPORT_TAGS{all}}, @{$EXPORT_TAGS{$_}} ) foreach keys %EXPORT_TAGS;
@@ -49,18 +58,110 @@ use ZoneMinder::Logger qw(:all);
 use ZoneMinder::Database qw(:all);
 
 use POSIX;
+use Fcntl qw(:flock O_WRONLY O_CREAT);
+
+# The pid recorded in a lock file, or undef when it is empty or unreadable.
+sub lockHolderPid {
+  my ($path) = @_;
+  my $rfh;
+  return undef unless open($rfh, '<', $path);
+  my $line = <$rfh>;
+  close($rfh);
+  return undef unless defined $line;
+  chomp $line;
+  # The capture also untaints it, since callers log it from taint checked scripts.
+  return ($line =~ /^(\d+)$/) ? $1 : undef;
+}
+
+# Take an exclusive, non blocking lock on $path, creating it if needed, and
+# record the holder's pid in it. The lock lives for as long as the caller keeps
+# the returned handle, so store it somewhere that outlives the work it guards.
+# It is released when the handle goes out of scope or the process exits,
+# including on a crash, which a lock built out of a pid file or the presence of
+# a socket cannot manage.
+#
+# Returns ($fh, $status, $pid):
+#   ($fh,   'ok',    $$)   the lock is ours
+#   (undef, 'held',  $pid) someone else has it, and who, when the file says so
+#   (undef, 'error', undef) it could not be opened at all, already logged
+#
+# Callers need those two failures kept apart. A lock file left behind by another
+# user cannot be opened for write at all, and reporting that as a duplicate
+# server sends the operator hunting for a process that does not exist.
+sub acquireExclusiveLock {
+  my ($path) = @_;
+
+  # O_CREAT without O_TRUNC on purpose. Truncating at open would throw away the
+  # current holder's pid before we know whether we can have the lock, and that
+  # pid is the one useful thing the loser has to report. 0666 because whoever
+  # runs the daemon next has to be able to open it for write: the socket
+  # directory belongs to the web user, but these daemons get run by hand as root
+  # often enough that a root owned 0644 lock file would wedge that monitor for
+  # good.
+  my $fh;
+  if (!sysopen($fh, $path, O_WRONLY|O_CREAT, 0666)) {
+    Error("Can't open lock file $path: $!");
+    return (undef, 'error', undef);
+  }
+  # umask takes the group and other write bits back off the mode above, so set
+  # them again. Harmlessly fails when we did not create it.
+  chmod(0666, $path);
+
+  if (!flock($fh, LOCK_EX|LOCK_NB)) {
+    my $pid = lockHolderPid($path);
+    close($fh);
+    return (undef, 'held', $pid);
+  }
+
+  # Ours now, so say who we are and let the next process name us rather than
+  # leaving someone to run fuser over the file.
+  truncate($fh, 0);
+  seek($fh, 0, 0);
+  syswrite($fh, "$$\n");
+  return ($fh, 'ok', $$);
+}
 
 # For running general shell commands
 sub executeShellCommand {
   my $command = shift;
   my $output = qx($command);
+  $output = '' if !defined($output);
+  chomp($output);
   my $status = $? >> 8;
-  if ( $status || logDebugging() ) {
-    $output = '' if !defined($output);
-    chomp($output);
-    Debug("Command: $command Output: $output");
+  if ($status) {
+    Warning("Failed Command: $command Status: $status Output: $output");
+  } elsif (logDebugging()) {
+    Debug("Command: $command Status: $status Output: $output");
   }
   return $status;
+}
+
+# Map legacy MySQL command names to MariaDB-native equivalents.
+# MariaDB is deprecating the mysql-prefixed names in favour of its own.
+my %DB_COMMAND_MAP = (
+  'mysql'     => 'mariadb',
+  'mysqldump' => 'mariadb-dump',
+);
+my %_db_command_cache;
+
+sub findDbCommand {
+  my $legacy_name = shift;
+  return $_db_command_cache{$legacy_name} if exists $_db_command_cache{$legacy_name};
+
+  my $maria_name = $DB_COMMAND_MAP{$legacy_name};
+  if ($maria_name) {
+    my $path = qx(command -v $maria_name 2>/dev/null);
+    chomp($path);
+    if ($path) {
+      Debug("Using '$maria_name' for database command '$legacy_name'");
+      $_db_command_cache{$legacy_name} = $maria_name;
+      return $maria_name;
+    }
+  }
+
+  Debug("Using legacy '$legacy_name' for database command");
+  $_db_command_cache{$legacy_name} = $legacy_name;
+  return $legacy_name;
 }
 
 sub getCmdFormat {
@@ -259,21 +360,21 @@ sub createEvent {
     }
     $frame->{Type} = $frame->{Score}>0?'Alarm':'Normal' unless( $frame->{Type} );
     $frame->{Delta} = $lastTimestamp?($frame->{TimeStamp}-$lastTimestamp):0.0;
-    $event->{StartTime} = $frame->{TimeStamp} unless ( $event->{StartTime} );
+    $event->{StartDateTime} = $frame->{TimeStamp} unless ( $event->{StartDateTime} );
     $event->{TotScore} += $frame->{Score};
     $event->{MaxScore} = $frame->{Score} if ( $frame->{Score} > $event->{MaxScore} );
     $event->{AlarmFrames}++ if ( $frame->{Type} eq 'Alarm' );
-    $event->{EndTime} = $frame->{TimeStamp};
+    $event->{EndDateTime} = $frame->{TimeStamp};
     $lastTimestamp = $frame->{TimeStamp};
   }
   $event->{Width} = $event->{monitor}->{Width} unless( $event->{Width} );
   $event->{Height} = $event->{monitor}->{Height} unless( $event->{Height} );
   $event->{AvgScore} = $event->{TotScore}/int($event->{AlarmFrames});
-  $event->{Length} = $event->{EndTime} - $event->{StartTime};
+  $event->{Length} = $event->{EndDateTime} - $event->{StartDateTime};
 
   my %formats = (
-      StartTime => 'from_unixtime(?)',
-      EndTime => 'from_unixtime(?)',
+      StartDateTime => 'from_unixtime(?)',
+      EndDateTime => 'from_unixtime(?)',
       );
 
   my ( @fields, @formats, @values );
@@ -291,10 +392,11 @@ sub createEvent {
     or Fatal( "Can't prepare sql '$sql': ".$dbh->errstr() );
   my $res = $sth->execute( @values )
     or Fatal( "Can't execute sql '$sql': ".$sth->errstr() );
-  $event->{Id} = $dbh->{mysql_insertid};
+  # Portable across DBD::mysql and DBD::MariaDB; see ZoneMinder::Object.
+  $event->{Id} = $dbh->last_insert_id(undef, undef, undef, undef);
   Info( "Created event ".$event->{Id} );
 
-  if ( $event->{EndTime} ) {
+  if ( $event->{EndDateTime} ) {
     $event->{Name} = $event->{monitor}->{EventPrefix}.$event->{Id}
     if ( $event->{Name} eq 'New Event' );
     my $sql = "update Events set Name = ? where Id = ?";
@@ -342,7 +444,7 @@ sub createEvent {
             ." to ".$frame->{capturePath}.": $!"
             );
       setFileOwner( $frame->{capturePath} );
-      if ( 0 && $Config{ZM_CREATE_ANALYSIS_IMAGES} ) {
+      if ( $event->{SaveJPEGs} > 1 ) {
         $frame->{analysePath} = sprintf(
             "%s/%0".$Config{ZM_EVENT_IMAGE_DIGITS}
             ."d-analyse.jpg"
@@ -380,8 +482,8 @@ sub updateEvent {
   if ( $event->{Name} eq 'New Event' );
 
   my %formats = (
-      StartTime => 'from_unixtime(?)',
-      EndTime => 'from_unixtime(?)',
+      StartDateTime => 'from_unixtime(?)',
+      EndDateTime => 'from_unixtime(?)',
       );
 
   my ( @values, @sets );
@@ -426,13 +528,13 @@ our $testedJSON = 0;
 our $hasJSONAny = 0;
 
 sub _testJSON {
-  return if ( $testedJSON );
+  return if $testedJSON;
   my $result = eval {
     require JSON::MaybeXS;
     JSON::MaybeXS->import();
   };
   $testedJSON = 1;
-  $hasJSONAny = 1 if ( $result );
+  $hasJSONAny = 1 if $result;
 }
 
 sub _getJSONType {
@@ -445,40 +547,41 @@ sub _getJSONType {
   return 'string';
 }
 
-sub jsonEncode;
-
 sub jsonEncode {
   my $value = shift;
 
   _testJSON();
-  if ( $hasJSONAny ) {
-    my $string = eval { JSON::MaybeXS->encode_json( $value ) };
-    Fatal( "Unable to encode object to JSON: $@" ) unless( $string );
-    return( $string );
+  if ($hasJSONAny) {
+    my $string = eval {
+      JSON::MaybeXS->encode_json($value);
+    };
+    Error('Unable to encode object to JSON: '.$@) unless $string;
+    return $string;
   }
 
   my $type = _getJSONType($value);
-  if ( $type eq 'integer' || $type eq 'double' ) {
-    return( $value );
-  } elsif ( $type eq 'boolean' ) {
-    return( $value?'true':'false' );
+  if ($type eq 'integer' || $type eq 'double') {
+    return '"'.$value.'"';
+  } elsif ($type eq 'boolean') {
+    return $value ? 'true' : 'false';
   } elsif ( $type eq 'string' ) {
     $value =~ s|(["\\/])|\\$1|g;
     $value =~ s|\r?\n|\n|g;
-    return( '"'.$value.'"' );
+    return '"'.$value.'"';
   } elsif ( $type eq 'null' ) {
-    return( 'null' );
+    return 'null';
   } elsif ( $type eq 'array' ) {
-    return( '['.join( ',', map { jsonEncode( $_ ) } @$value ).']' );
+    return '['.join( ',', map { jsonEncode( $_ ) } @$value ).']';
   } elsif ( $type eq 'hash' ) {
     my $result = '{';
-    while ( my ( $subKey=>$subValue ) = each( %$value ) ) {
+    while ( my ( $subKey=>$subValue ) = each(%$value) ) {
       $result .= ',' if ( $result ne '{' );
-      $result .= '"'.$subKey.'":'.jsonEncode( $subValue );
+      $result .= '"'.$subKey.'":'.jsonEncode($subValue);
     }
-    return( $result.'}' );
+    return $result.'}';
   } else {
-    Fatal( "Unexpected type '$type'" );
+    Error("Unexpected type '$type'");
+    return '';
   }
 }
 
@@ -531,6 +634,108 @@ sub jsonDecode {
   return $result;
 }
 
+sub jsonLoad {
+  my $file = shift;
+  my $json = undef;
+  eval {
+    require File::Slurp;
+    my $contents = File::Slurp::read_file($file);
+    if (!$contents) {
+      Error("No contents for $file");
+      return $json;
+    }
+    require JSON;
+    $json = JSON::decode_json($contents);
+  };
+  Error($@) if $@;
+  return $json;
+}
+
+sub parseNameEqualsValueToHash {
+  my %settings;
+  foreach my $line ( split ( /\r?\n/, $_[0] ) ) {
+    next if ! $line;
+    next if ! ( $line =~ /=/ );
+    my ($name, $value ) = split('=', $line);
+    $value =~ s/^'//;
+    $value =~ s/'$//;
+    $settings{$name} = defined $value ? $value : '';
+  }
+  return wantarray ? %settings : \%settings;
+}
+
+sub hash_diff {
+  # assumes keys of second hash are all in the first hash
+  my ( $settings, $defaults ) = @_;
+  my %updates;
+  my %defaults = %{$defaults} if $defaults;
+
+  foreach my $setting ( keys %{$settings} ) {
+    next if ! exists $defaults{$setting};
+
+    if ((ref $$settings{$setting}) ne (ref $defaults{$setting})) {
+      Warning("Different refs for $setting");
+      next;
+    }
+
+    if (ref $$settings{$setting} eq 'HASH') {
+      my %u = hash_diff($$settings{$setting}, $defaults{$setting});
+      if (%u) {
+        $updates{$setting} = \%u;
+      }
+    } elsif (
+      ($$settings{$setting} and ! $defaults{$setting})
+        or
+      (!$$settings{$setting} and $defaults{$setting})
+        or
+      (
+        ($$settings{$setting} and $defaults{$setting} and (
+            $$settings{$setting} ne $defaults{$setting}))
+      )
+    ) {
+      $updates{$setting} = $defaults{$setting};
+    }
+  } # end foreach setting
+  foreach my $key (keys %{$defaults}) {
+    if (!exists $$settings{$key} and defined($$defaults{$key})) {
+      $updates{$key} = $$defaults{$key};
+    }
+  }
+  return %updates;
+}
+
+sub packageControl {
+  my $command = shift;
+  my $string = $Config{ZM_PATH_BIN}.'/zmpkg.pl '.$command;
+  $string .= ' 2>/dev/null >&- <&- >/dev/null';
+  executeShellCommand($string);
+}
+
+sub daemonControl {
+  my ($command, $daemon, $args) = @_;
+  my $string = $Config{ZM_PATH_BIN}.'/zmdc.pl '.$command;
+  if ( $daemon ) {
+    $string .= ' ' . $daemon;
+    if ( $args ) {
+      $string .= ' ' . $args;
+    }
+  }
+  #$string .= ' 2>/dev/null >&- <&- >/dev/null';
+  executeShellCommand($string);
+}
+
+sub systemStatus {
+  my $command = $Config{ZM_PATH_BIN}.'/zmdc.pl check';
+  my $output = qx($command);
+  my $status = $? >> 8;
+  if ( $status || logDebugging() ) {
+    $output = '' if !defined($output);
+    chomp($output);
+    Debug("Command: $command Output: $output");
+  }
+  return $output;
+}
+
 1;
 __END__
 # Below is stub documentation for your module. You'd better edit it!
@@ -542,7 +747,6 @@ ZoneMinder::General - Utility Functions for ZoneMinder
 =head1 SYNOPSIS
 
 use ZoneMinder::General;
-blah blah blah
 
 =head1 DESCRIPTION
 
@@ -553,6 +757,7 @@ of the ZoneMinder scripts
 
     functions => [ qw(
       executeShellCommand
+      findDbCommand
       getCmdFormat
       runCommand
       setFileOwner
@@ -561,6 +766,13 @@ of the ZoneMinder scripts
       makePath
       jsonEncode
       jsonDecode
+      packageControl
+      daemonControl
+      systemStatus
+      parseNameEqualsValueToHash
+      hash_diff
+      acquireExclusiveLock
+      lockHolderPid
       ) ]
 
 

@@ -20,44 +20,69 @@
 
 require_once('includes/Server.php');
 require_once('includes/Storage.php');
+require_once('includes/User.php');
+require_once('includes/Zone.php');
 
-if ( !canEdit('Monitors', empty($_REQUEST['mid'])?0:$_REQUEST['mid']) ) {
+if (!canEdit('Monitors', empty($_REQUEST['mid'])?0:$_REQUEST['mid'])) {
   $view = 'error';
   return;
 }
 
 $Server = null;
-if ( defined('ZM_SERVER_ID') ) {
+if (defined('ZM_SERVER_ID')) {
   $Server = dbFetchOne('SELECT * FROM Servers WHERE Id=?', NULL, array(ZM_SERVER_ID));
 }
-if ( !$Server ) {
+if (!$Server) {
   $Server = array('Id' => '');
 }
 
+$monitors = dbFetchAll('SELECT Id, Name FROM Monitors WHERE Deleted=false ORDER BY Name,Sequence ASC');
+$monitors_by_id = array();
+foreach ($monitors as $row) {
+  $monitors_by_id[$row['Id']] = $row['Name'];
+}
+$monitors_by_name = array_flip($monitors_by_id);
+
+$mid = null;
 $monitor = null;
-if ( !empty($_REQUEST['mid']) ) {
-  $monitor = new ZM\Monitor($_REQUEST['mid']);
-  if ( $monitor and ZM_OPT_X10 )
-    $x10Monitor = dbFetchOne('SELECT * FROM TriggersX10 WHERE MonitorId = ?', NULL, array($_REQUEST['mid']));
+$thisNewMonitor = false;
+if (!empty($_REQUEST['mid'])) {
+  $mid = validInt($_REQUEST['mid']);
+  $monitor = new ZM\Monitor($mid);
+  if ($monitor->Id()) {
+    if (ZM_OPT_X10) {
+      $x10Monitor = dbFetchOne('SELECT * FROM TriggersX10 WHERE MonitorId = ?', NULL, array($mid));
+    }
+  } else {
+    $monitor->Name(translate('Monitor').'-'.$mid);
+    $monitor->WebColour(random_colour());
+  }
 }
 
-if ( !$monitor ) {
-  $nextId = getTableAutoInc('Monitors');
-  if ( isset($_REQUEST['dupId']) ) {
-    $monitor = new ZM\Monitor($_REQUEST['dupId']);
-    $monitor->GroupIds(); // have to load before we change the Id
-    if ( ZM_OPT_X10 )
-      $x10Monitor = dbFetchOne('SELECT * FROM TriggersX10 WHERE MonitorId = ?', NULL, array($_REQUEST['dupId']));
-    $clonedName = $monitor->Name();
-    $monitor->Id(0);
-  } else {
-    $monitor = new ZM\Monitor();
-  } # end if $_REQUEST['dupID']
-  $monitor->Name(translate('Monitor').'-'.$nextId);
+if (!$monitor) {
+  $thisNewMonitor = true;
+  $monitor = new ZM\Monitor();
+  $monitor->Name(translate('Monitor').'-'.getTableAutoInc('Monitors'));
+  while (isset($monitors_by_name[$monitor->Name()])) {
+    $monitor->Name($monitor->Name().'0');
+  }
   $monitor->WebColour(random_colour());
 } # end if $_REQUEST['mid']
 
-if ( ZM_OPT_X10 && empty($x10Monitor) ) {
+if (isset($_REQUEST['dupId'])) {
+  $monitor = new ZM\Monitor(validCardinal($_REQUEST['dupId']));
+  $monitor->GroupIds(); // have to load before we change the Id
+  if (ZM_OPT_X10)
+    $x10Monitor = dbFetchOne('SELECT * FROM TriggersX10 WHERE MonitorId = ?', NULL, array($_REQUEST['dupId']));
+  $clonedName = $monitor->Name();
+  $monitor->Name('Clone of '.$monitor->Name());
+  while (isset($monitors_by_name[$monitor->Name()])) {
+    $monitor->Name('Clone of '.$monitor->Name());
+  }
+  $monitor->Id($mid);
+}
+
+if (ZM_OPT_X10 && empty($x10Monitor)) {
   $x10Monitor = array(
       'Activation' => '',
       'AlarmInput' => '',
@@ -68,50 +93,49 @@ if ( ZM_OPT_X10 && empty($x10Monitor) ) {
 function fourcc($a, $b, $c, $d) {
   return ord($a) | (ord($b) << 8) | (ord($c) << 16) | (ord($d) << 24);
 }
-if ( isset($_REQUEST['newMonitor']) ) {
+if (isset($_REQUEST['newMonitor'])) {
   # Update the monitor object with whatever has been set so far.
   $monitor->set($_REQUEST['newMonitor']);
 
-  if ( ZM_OPT_X10 )
+  if (ZM_OPT_X10)
     $newX10Monitor = $_REQUEST['newX10Monitor'];
 } else {
-  if ( ZM_OPT_X10 )
+  if (ZM_OPT_X10)
     $newX10Monitor = $x10Monitor;
 }
 
 # What if it has less zeros?  This is not robust code.
-if ( $monitor->AnalysisFPSLimit() == '0.00' )
+if ($monitor->AnalysisFPSLimit() == '0.00')
   $monitor->AnalysisFPSLimit('');
-if ( $monitor->MaxFPS() == '0.00' )
+if ($monitor->MaxFPS() == '0.00')
   $monitor->MaxFPS('');
-if ( $monitor->AlarmMaxFPS() == '0.00' )
+if ($monitor->AlarmMaxFPS() == '0.00')
   $monitor->AlarmMaxFPS('');
 
-if ( !empty($_REQUEST['preset']) ) {
-  $preset = dbFetchOne( 'SELECT Type, Device, Channel, Format, Protocol, Method, Host, Port, Path, Width, Height, Palette, MaxFPS, Controllable, ControlId, ControlDevice, ControlAddress, DefaultRate, DefaultScale FROM MonitorPresets WHERE Id = ?', NULL, array($_REQUEST['preset']) );
-  foreach ( $preset as $name=>$value ) {
+if (!empty($_REQUEST['preset'])) {
+  $preset = dbFetchOne('SELECT Type, Device, Channel, Format, Protocol, Method, Host, Port, Path, Width, Height, Palette, MaxFPS, Controllable, ControlId, ControlDevice, ControlAddress, DefaultRate, DefaultScale FROM MonitorPresets WHERE Id = ?', NULL, array($_REQUEST['preset']));
+  foreach ($preset as $name=>$value) {
     # Does isset handle NULL's?  I don't think this code is correct.
     # Icon: It does, but this means we can't set a null value.
-    if ( isset($value) ) {
+    if (isset($value)) {
       $monitor->$name($value);
     }
   }
 } # end if preset
 
-if ( !empty($_REQUEST['probe']) ) {
+if (!empty($_REQUEST['probe'])) {
   $probe = json_decode(base64_decode($_REQUEST['probe']));
-  foreach ( $probe as $name=>$value ) {
-    if ( isset($value) ) {
-      # Does isset handle NULL's?  I don't think this code is correct.
+  foreach ($probe as $name=>$value) {
+    if (isset($value)) {
       $monitor->$name = urldecode($value);
     }
   }
-  if ( ZM_HAS_V4L && $monitor->Type() == 'Local' ) {
-    $monitor->Palette( fourCC( substr($monitor->Palette,0,1), substr($monitor->Palette,1,1), substr($monitor->Palette,2,1), substr($monitor->Palette,3,1) ) );
-    if ( $monitor->Format() == 'PAL' )
-      $monitor->Format( 0x000000ff );
-    elseif ( $monitor->Format() == 'NTSC' )
-      $monitor->Format( 0x0000b000 );
+  if (ZM_HAS_V4L2 && ($monitor->Type() == 'Local')) {
+    $monitor->Palette(fourCC(substr($monitor->Palette,0,1), substr($monitor->Palette,1,1), substr($monitor->Palette,2,1), substr($monitor->Palette,3,1)));
+    if ($monitor->Format() == 'PAL')
+      $monitor->Format(0x000000ff);
+    else if ($monitor->Format() == 'NTSC')
+      $monitor->Format(0x0000b000);
   }
 } # end if apply probe settings
 
@@ -121,22 +145,13 @@ $sourceTypes = array(
     'File'   => translate('File'),
     'Ffmpeg' => translate('Ffmpeg'),
     'Libvlc' => translate('Libvlc'),
-    'cURL'   => 'cURL (HTTP(S) only)',
     'WebSite'=> 'Web Site',
-    'NVSocket'	=> translate('NVSocket')
+    'NVSocket'	=> translate('NVSocket'),
+    'VNC' => translate('VNC'),
     );
-if ( !ZM_HAS_V4L )
+if (!ZM_HAS_V4L2)
   unset($sourceTypes['Local']);
 
-$localMethods = array(
-    'v4l2' => 'Video For Linux version 2',
-    'v4l1' => 'Video For Linux version 1',
-    );
-
-if ( !ZM_HAS_V4L2 )
-  unset($localMethods['v4l2']);
-if ( !ZM_HAS_V4L1 )
-  unset($localMethods['v4l1']);
 
 $remoteProtocols = array(
     'http' => 'HTTP',
@@ -163,42 +178,12 @@ $httpMethods = array(
     'jpegTags' => 'JPEG Tags'
     );
 
-if ( !ZM_PCRE )
+if (!ZM_PCRE)
   unset($httpMethods['regexp']);
   // Currently unsupported
 unset($httpMethods['jpegTags']);
 
-if ( ZM_HAS_V4L1 ) {
-  $v4l1DeviceFormats = array(
-      0 => 'PAL',
-      1 => 'NTSC',
-      2 => 'SECAM',
-      3 => 'AUTO',
-      4 => 'FMT4',
-      5 => 'FMT5',
-      6 => 'FMT6',
-      7 => 'FMT7'
-      );
-
-  $v4l1MaxChannels = 15;
-  $v4l1DeviceChannels = array();
-  for ( $i = 0; $i <= $v4l1MaxChannels; $i++ )
-    $v4l1DeviceChannels[$i] = $i;
-
-  $v4l1LocalPalettes = array(
-      1  => translate('Grey'),
-      5  => 'BGR32',
-      4  => 'BGR24',
-      8  => '*YUYV',
-      3  => '*RGB565',
-      6  => '*RGB555',
-      7  => '*YUV422',
-      13 => '*YUV422P',
-      15 => '*YUV420P',
-      );
-}
-
-if ( ZM_HAS_V4L2 ) {
+if (ZM_HAS_V4L2) {
   $v4l2DeviceFormats = array(
     0x000000ff => 'PAL',
     0x0000b000 => 'NTSC',
@@ -232,7 +217,7 @@ if ( ZM_HAS_V4L2 ) {
 
   $v4l2MaxChannels = 31;
   $v4l2DeviceChannels = array();
-  for ( $i = 0; $i <= $v4l2MaxChannels; $i++ )
+  for ($i = 0; $i <= $v4l2MaxChannels; $i++)
     $v4l2DeviceChannels[$i] = $i;
 
   $v4l2LocalPalettes = array(
@@ -311,6 +296,7 @@ $Colours = array(
     '4' => translate('32BitColour')
     );
 
+
 $orientations = array(
     'ROTATE_0' => translate('Normal'),
     'ROTATE_90' => translate('RotateRight'),
@@ -321,14 +307,14 @@ $orientations = array(
     );
 
 $deinterlaceopts = array(
-  0x00000000 => 'Disabled',
-  0x00001E04 => 'Four field motion adaptive - Soft', /* 30 change */
-  0x00001404 => 'Four field motion adaptive - Medium', /* 20 change */
-  0x00000A04 => 'Four field motion adaptive - Hard', /* 10 change */
-  0x00000001 => 'Discard',
-  0x00000002 => 'Linear',
-  0x00000003 => 'Blend',
-  0x00000205 => 'Blend (25%)',
+  0x00000000 => translate('Disabled'),
+  0x00001E04 => translate('Four field motion adaptive - Soft'), /* 30 change */
+  0x00001404 => translate('Four field motion adaptive - Medium'), /* 20 change */
+  0x00000A04 => translate('Four field motion adaptive - Hard'), /* 10 change */
+  0x00000001 => translate('Discard'),
+  0x00000002 => translate('Linear'),
+  0x00000003 => translate('Blend'),
+  0x00000205 => translate('Blend (25%)'),
 );
 
 $deinterlaceopts_v4l2 = array(
@@ -348,73 +334,50 @@ $deinterlaceopts_v4l2 = array(
 );
 
 $fastblendopts = array(
-    0  => 'No blending',
+    0  => translate ('No blending'),
     1  => '1.5625%',
     3  => '3.125%',
-    6  => '6.25% (Indoor)',
-    12 => '12.5% (Outdoor)',
+    6  => translate('6.25% (Indoor)'),
+    12 => translate('12.5% (Outdoor)'),
     25 => '25%',
     50 => '50%',
     );
 
 $fastblendopts_alarm = array(
-    0  => 'No blending (Alarm lasts forever)',
+    0  => translate('No blending (Alarm lasts forever)'),
     1  => '1.5625%',
     3  => '3.125%',
     6  => '6.25%',
     12 => '12.5%',
     25 => '25%',
-    50 => '50% (Alarm lasts a moment)',
+    50 => translate('50% (Alarm lasts a moment)'),
     );
 
 $label_size = array(
-    1 => translate('Default'),
-    2 => translate('Large'),
+    1 => translate('Small'),
+    2 => translate('Default'),
+    3 => translate('Large'),
+    4 => translate('Extra Large'),
     );
 
-$codecs = array(
-  'auto'  => translate('Auto'),
-  'MP4'  => translate('MP4'),
-  'MJPEG' => translate('MJPEG'),
-);
 
 xhtmlHeaders(__FILE__, translate('Monitor').' - '.validHtmlStr($monitor->Name()));
 getBodyTopHTML();
+echo getNavBarHTML();
 ?>
-  <div id="page">
-    <div id="header">
-<?php
-if ( canEdit('Monitors') ) {
-  if ( isset($_REQUEST['dupId']) ) {
-?>
-    <div class="alert alert-info">
-      Configuration cloned from Monitor: <?php echo validHtmlStr($clonedName) ?>
-    </div>
-<?php
-  }
-?>
-    <div id="headerButtons">
-      <?php echo makePopupLink('?view=monitorprobe&mid='.$monitor->Id(), 'zmMonitorProbe'.$monitor->Id(), 'monitorprobe', translate('Probe')); ?>
-<?php
-  if ( ZM_HAS_ONVIF ) {
-       echo makePopupLink('?view=onvifprobe&mid='.$monitor->Id(), 'zmOnvifProbe'.$monitor->Id(), 'onvifprobe', translate('OnvifProbe'));
-  }
-?>
-      <?php echo makePopupLink('?view=monitorpreset&mid=' . $monitor->Id(), 'zmMonitorPreset' . $monitor->Id(), 'monitorpreset', translate('Presets')); ?>
-    </div>
-<?php
-} // end if canEdit('Monitors')
-?>
-    <h2><?php echo translate('Monitor') ?> - <?php echo validHtmlStr($monitor->Name()) ?><?php if ( $monitor->Id() ) { ?> (<?php echo $monitor->Id()?>)<?php } ?></h2>
-  </div>
-  <div id="content">
-    <ul class="tabList">
+<div id="page">
+  <div id="content" class="row flex-nowrap">
+    <nav>  <!-- BEGIN PILL LIST -->
+      <ul class="nav nav-pills" id="pills-tab" role="tablist" aria-orientation="vertical">
 <?php
 $tabs = array();
 $tabs['general'] = translate('General');
 $tabs['source'] = translate('Source');
 if ( $monitor->Type() != 'WebSite' ) {
-  $tabs['storage'] = translate('Storage');
+  $tabs['analysis'] = translate('Analysis');
+  $tabs['recording'] = translate('Recording');
+  $tabs['viewing'] = translate('Viewing');
+  $tabs['onvif'] = translate('ONVIF');
   $tabs['timestamp'] = translate('Timestamp');
   $tabs['buffers'] = translate('Buffers');
   if ( ZM_OPT_CONTROL && canView('Control') )
@@ -422,309 +385,198 @@ if ( $monitor->Type() != 'WebSite' ) {
   if ( ZM_OPT_X10 )
     $tabs['x10'] = translate('X10');
   $tabs['misc'] = translate('Misc');
+  $tabs['zones'] = translate('Zones');
+  if (defined('ZM_OPT_USE_GEOLOCATION') and ZM_OPT_USE_GEOLOCATION)
+    $tabs['location'] = translate('Location');
+  $tabs['mqtt'] = translate('MQTT');
 }
 
-if ( isset($_REQUEST['tab']) )
+if (isset($_REQUEST['tab']) and isset($tabs[$_REQUEST['tab']]) ) {
   $tab = validHtmlStr($_REQUEST['tab']);
-else
+} else {
   $tab = 'general';
+}
 
-foreach ( $tabs as $name=>$value ) {
-  if ( $tab == $name ) {
+foreach ($tabs as $name=>$value) {
 ?>
-      <li class="active"><?php echo $value ?></li>
+    <li class="nav-item form-control-sm my-1" id="<?php echo $name?>-li">
+      <a 
+        id="<?php echo $name?>-tab"
+        class="nav-link<?php echo ($tab == $name ? ' active' : '') . ' ' . (($name == 'zones' && $thisNewMonitor === true) ? 'disabled' : '')?>"
+        <?php 
+        if ($name == 'zones') {
+          //echo 'href="index.php?view=zones&mid=' . $monitor->Id() . '" ';
+          echo 'href="#"';
+        } else {
+          echo 'href="#pills-' . $name . '" '; 
+          echo 'role="tab" '; 
+          echo 'data-toggle="pill" '; 
+        }
+        ?>
+        aria-controls="pills-<?php echo $name?>"
+        aria-selected="<?php echo $tab == $name ? 'true':'false'?>"
+      ><?php echo $value ?></a></li>
 <?php
-  } else {
-?>
-      <li><a href="#" data-tab-name="<?php echo $name ?>"><?php echo $value ?></a></li>
-<?php
-  }
 }
   ?>
     </ul>
-    <div class="clear"></div>
-    <form name="contentForm" id="contentForm" method="post" action="?">
-      <input type="hidden" name="view" value="<?php echo $view ?>"/>
-      <input type="hidden" name="tab" value="<?php echo $tab ?>"/>
-      <input type="hidden" name="action" value="monitor"/>
-      <input type="hidden" name="mid" value="<?php echo $monitor->Id()?>"/>
-      <input type="hidden" name="origMethod" value="<?php echo ( null !== $monitor->Method())?validHtmlStr($monitor->Method()):'' ?>"/>
+  </nav> <!-- END PILL LIST -->
+  <div class="d-flex flex-column col-sm-offset-2 container-fluid">
+    <!-- BEGIN MINI HEADER -->
+    <div class="d-flex flex-row justify-content-between px-3 py-1">
+      <div class="" id="toolbar" >
+        <button id="backBtn" class="btn btn-normal" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Back') ?>" disabled><i class="fa fa-arrow-left"></i></button>
+        <button id="refreshBtn" class="btn btn-normal" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Refresh') ?>" ><i class="fa fa-refresh"></i></button>
+      </div>
+      
+      <h2><?php echo translate('Monitor').' - '.($monitor->Id() ? $monitor->Id().' - ' : '').validHtmlStr($monitor->Name()) ?></h2>
 <?php
-if ( $tab != 'general' ) {
+if (canEdit('Monitors')) {
+  if (isset($_REQUEST['dupId'])) {
 ?>
-      <input type="hidden" name="newMonitor[Name]" value="<?php echo validHtmlStr($monitor->Name()) ?>"/>
-      <input type="hidden" name="newMonitor[Notes]" value="<?php echo validHtmlStr($monitor->Notes()) ?>"/>
-      <input type="hidden" name="newMonitor[ServerId]" value="<?php echo validHtmlStr($monitor->ServerId() ) ?>"/>
-      <input type="hidden" name="newMonitor[LinkedMonitors]" value="<?php echo (null !== $monitor->LinkedMonitors())?validHtmlStr($monitor->LinkedMonitors()):'' ?>"/>
+      <div class="alert alert-info">
+        Configuration cloned from Monitor: <?php echo validHtmlStr($clonedName) ?>
+      </div>
 <?php
-foreach ( $monitor->GroupIds() as $group_id ) {
-echo '<input type="hidden" name="newMonitor[GroupIds][]" value="'.$group_id.'"/>';
-}
-?>
-      <input type="hidden" name="newMonitor[Type]" value="<?php echo validHtmlStr($monitor->Type()) ?>"/>
-      <input type="hidden" name="newMonitor[Function]" value="<?php echo validHtmlStr($monitor->Function()) ?>"/>
-      <input type="hidden" name="newMonitor[Enabled]" value="<?php echo validHtmlStr($monitor->Enabled()) ?>"/>
-      <input type="hidden" name="newMonitor[RefBlendPerc]" value="<?php echo validHtmlStr($monitor->RefBlendPerc()) ?>"/>
-      <input type="hidden" name="newMonitor[AlarmRefBlendPerc]" value="<?php echo validHtmlStr($monitor->AlarmRefBlendPerc()) ?>"/>
-      <input type="hidden" name="newMonitor[AnalysisFPSLimit]" value="<?php echo validHtmlStr($monitor->AnalysisFPSLimit()) ?>"/>
-      <input type="hidden" name="newMonitor[MaxFPS]" value="<?php echo validHtmlStr($monitor->MaxFPS()) ?>"/>
-      <input type="hidden" name="newMonitor[AlarmMaxFPS]" value="<?php echo validHtmlStr($monitor->AlarmMaxFPS()) ?>"/>
-<?php
-  if ( '' !== $monitor->Triggers() ) {
-    foreach ( explode(',', $monitor->Triggers()) as $newTrigger ) {
-?>
-      <input type="hidden" name="newMonitor[Triggers][]" value="<?php echo validHtmlStr($newTrigger) ?>"/>
-<?php
-    }
   }
-}
-if ( ZM_HAS_V4L && ($tab != 'source' || $monitor->Type() != 'Local') ) {
 ?>
-      <input type="hidden" name="newMonitor[Device]" value="<?php echo validHtmlStr($monitor->Device()) ?>"/>
-      <input type="hidden" name="newMonitor[Channel]" value="<?php echo validHtmlStr($monitor->Channel()) ?>"/>
-      <input type="hidden" name="newMonitor[Format]" value="<?php echo validHtmlStr($monitor->Format()) ?>"/>
-      <input type="hidden" name="newMonitor[Palette]" value="<?php echo validHtmlStr($monitor->Palette()) ?>"/>
-      <input type="hidden" name="newMonitor[V4LMultiBuffer]" value="<?php echo validHtmlStr($monitor->V4LMultiBuffer()) ?>"/>
-      <input type="hidden" name="newMonitor[V4LCapturesPerFrame]" value="<?php echo validHtmlStr($monitor->V4LCapturesPerFrame()) ?>"/>
+      <div>
+        <button id="probeBtn" class="btn btn-normal" data-mid="<?php echo $monitor->Id() ?>" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Probe') ?>" ><i class="fa fa-rss-square"></i></button>
+        <button id="onvifBtn" class="btn btn-normal" data-mid="<?php echo $monitor->Id() ?>" data-toggle="tooltip" data-placement="top" title="<?php echo translate('OnvifProbe') ?>" ><i class="fa fa-rss"></i></button>
+        <button id="presetBtn" class="btn btn-normal" data-mid="<?php echo $monitor->Id() ?>" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Presets') ?>" ><i class="fa fa-list-ol"></i></button>
+      </div>
 <?php
-}
-if ( $tab != 'source' || $monitor->Type()!= 'Remote' ) {
+} // end if canEdit('Monitors')
 ?>
-      <input type="hidden" name="newMonitor[Protocol]" value="<?php echo validHtmlStr($monitor->Protocol()) ?>"/>
-      <input type="hidden" name="newMonitor[Host]" value="<?php echo validHtmlStr($monitor->Host()) ?>"/>
-      <input type="hidden" name="newMonitor[Port]" value="<?php echo validHtmlStr($monitor->Port()) ?>"/>
+    </div><!--mini header-->
+
+    <!-- BEGIN ITEM LIST -->
+    <div class="container-fluid" id="monitor">
+      <form name="contentForm" id="contentForm" method="post" action="?view=monitor" autocomplete="off">
+        <input type="hidden" name="tab" value="<?php echo $tab?>"/>
+        <input type="hidden" name="mid" value="<?php echo $monitor->Id() ? $monitor->Id() : $mid ?>"/>
+        <input type="hidden" name="origMethod" value="<?php echo (null !== $monitor->Method())?validHtmlStr($monitor->Method()):'' ?>"/>
+        <div class="tab-content" id="pills-tabContent">
 <?php
-}
-if ( $tab != 'source' || ($monitor->Type()!= 'Local' && $monitor->Type()!= 'Remote' && $monitor->Type()!= 'Ffmpeg' && $monitor->Type()!= 'Libvlc') ) {
+foreach ($tabs as $name=>$value) {
+  echo '<div id="pills-'.$name.'" class="tab-pane fade'.($name==$tab ? ' show active' : '').'" role="tabpanel" aria-labelledby="'.$name.'-tab">';
 ?>
-      <input type="hidden" name="newMonitor[Method]" value="<?php echo validHtmlStr(null !== $monitor->Method() ? $monitor->Method() : 'rtpRtsp' ) ?>"/>
+          <ul class="form">
 <?php
-}
-if ( $tab != 'source' || ($monitor->Type()!= 'Ffmpeg' && $monitor->Type()!= 'Libvlc' )) {
-?>
-      <input type="hidden" name="newMonitor[Options]" value="<?php echo validHtmlStr($monitor->Options()) ?>"/>
-<?php
-}
-if ( $tab != 'source' || ($monitor->Type()!= 'Remote' && $monitor->Type()!= 'File' && $monitor->Type()!= 'Ffmpeg' && $monitor->Type()!= 'Libvlc' && $monitor->Type()!= 'cURL' && $monitor->Type() != 'WebSite') ) {
-?>
-      <input type="hidden" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/>
-      <input type="hidden" name="newMonitor[User]" value="<?php echo validHtmlStr($monitor->User()) ?>"/>
-      <input type="hidden" name="newMonitor[Pass]" value="<?php echo validHtmlStr($monitor->Pass()) ?>"/>
-<?php
-}
-if ( $tab != 'source' ) {
-?>
-      <input type="hidden" name="newMonitor[Colours]" value="<?php echo validHtmlStr($monitor->Colours()) ?>"/>
-      <input type="hidden" name="newMonitor[Width]" value="<?php echo validHtmlStr($monitor->Width()) ?>"/>
-      <input type="hidden" name="newMonitor[Height]" value="<?php echo validHtmlStr($monitor->Height()) ?>"/>
-      <input type="hidden" name="newMonitor[Orientation]" value="<?php echo validHtmlStr($monitor->Orientation()) ?>"/>
-      <input type="hidden" name="newMonitor[Deinterlacing]" value="<?php echo validHtmlStr($monitor->Deinterlacing()) ?>"/>
-<?php
-}
-if ( $tab != 'storage' ) {
-?>
-      <input type="hidden" name="newMonitor[StorageId]" value="<?php echo validHtmlStr($monitor->StorageId()) ?>"/>
-      <input type="hidden" name="newMonitor[SaveJPEGs]" value="<?php echo validHtmlStr($monitor->SaveJPEGs()) ?>"/>
-      <input type="hidden" name="newMonitor[VideoWriter]" value="<?php echo validHtmlStr($monitor->VideoWriter()) ?>"/>
-      <input type="hidden" name="newMonitor[EncoderParameters]" value="<?php echo validHtmlStr($monitor->EncoderParameters()) ?>"/>
-      <input type="hidden" name="newMonitor[RecordAudio]" value="<?php echo validHtmlStr($monitor->RecordAudio()) ?>"/>
-<?php
-}
-if ( $tab != 'source' || ($monitor->Type() != 'Remote' && $monitor->Protocol()!= 'rtsp') ) {
-?>
-      <input type="hidden" name="newMonitor[RTSPDescribe]" value="<?php echo validHtmlStr($monitor->RTSPDescribe()) ?>"/>
-<?php
-}
-if ( $tab != 'timestamp' ) {
-?>
-      <input type="hidden" name="newMonitor[LabelFormat]" value="<?php echo validHtmlStr($monitor->LabelFormat()) ?>"/>
-      <input type="hidden" name="newMonitor[LabelX]" value="<?php echo validHtmlStr($monitor->LabelX()) ?>"/>
-      <input type="hidden" name="newMonitor[LabelY]" value="<?php echo validHtmlStr($monitor->LabelY()) ?>"/>
-      <input type="hidden" name="newMonitor[LabelSize]" value="<?php echo validHtmlStr($monitor->LabelSize()) ?>"/>
-<?php
-}
-if ( $tab != 'buffers' ) {
-?>
-      <input type="hidden" name="newMonitor[ImageBufferCount]" value="<?php echo validHtmlStr($monitor->ImageBufferCount()) ?>"/>
-      <input type="hidden" name="newMonitor[WarmupCount]" value="<?php echo validHtmlStr($monitor->WarmupCount()) ?>"/>
-      <input type="hidden" name="newMonitor[PreEventCount]" value="<?php echo validHtmlStr($monitor->PreEventCount()) ?>"/>
-      <input type="hidden" name="newMonitor[PostEventCount]" value="<?php echo validHtmlStr($monitor->PostEventCount()) ?>"/>
-      <input type="hidden" name="newMonitor[StreamReplayBuffer]" value="<?php echo validHtmlStr($monitor->StreamReplayBuffer()) ?>"/>
-      <input type="hidden" name="newMonitor[AlarmFrameCount]" value="<?php echo validHtmlStr($monitor->AlarmFrameCount()) ?>"/>
-<?php
-}
-if ( ZM_OPT_CONTROL && $tab != 'control' ) {
-?>
-      <input type="hidden" name="newMonitor[Controllable]" value="<?php echo validHtmlStr($monitor->Controllable()) ?>"/>
-      <input type="hidden" name="newMonitor[ControlId]" value="<?php echo validHtmlStr($monitor->ControlId()) ?>"/>
-      <input type="hidden" name="newMonitor[ControlDevice]" value="<?php echo validHtmlStr($monitor->ControlDevice()) ?>"/>
-      <input type="hidden" name="newMonitor[ControlAddress]" value="<?php echo validHtmlStr($monitor->ControlAddress()) ?>"/>
-      <input type="hidden" name="newMonitor[AutoStopTimeout]" value="<?php echo validHtmlStr($monitor->AutoStopTimeout()) ?>"/>
-      <input type="hidden" name="newMonitor[TrackMotion]" value="<?php echo validHtmlStr($monitor->TrackMotion()) ?>"/>
-      <input type="hidden" name="newMonitor[TrackDelay]" value="<?php echo validHtmlStr($monitor->TrackDelay()) ?>"/>
-      <input type="hidden" name="newMonitor[ReturnLocation]" value="<?php echo validHtmlStr($monitor->ReturnLocation()) ?>"/>
-      <input type="hidden" name="newMonitor[ReturnDelay]" value="<?php echo validHtmlStr($monitor->ReturnDelay()) ?>"/>
-<?php
-}
-if ( ZM_OPT_X10 && $tab != 'x10' ) {
-?>
-      <input type="hidden" name="newX10Monitor[Activation]" value="<?php echo validHtmlStr($newX10Monitor['Activation']) ?>"/>
-      <input type="hidden" name="newX10Monitor[AlarmInput]" value="<?php echo validHtmlStr($newX10Monitor['AlarmInput']) ?>"/>
-      <input type="hidden" name="newX10Monitor[AlarmOutput]" value="<?php echo validHtmlStr($newX10Monitor['AlarmOutput']) ?>"/>
-<?php
-}
-if ( $tab != 'misc' ) {
-?>
-      <input type="hidden" name="newMonitor[EventPrefix]" value="<?php echo validHtmlStr($monitor->EventPrefix()) ?>"/>
-      <input type="hidden" name="newMonitor[SectionLength]" value="<?php echo validHtmlStr($monitor->SectionLength()) ?>"/>
-      <input type="hidden" name="newMonitor[MinSectionLength]" value="<?php echo validHtmlStr($monitor->MinSectionLength()) ?>"/>
-      <input type="hidden" name="newMonitor[FrameSkip]" value="<?php echo validHtmlStr($monitor->FrameSkip()) ?>"/>
-      <input type="hidden" name="newMonitor[MotionFrameSkip]" value="<?php echo validHtmlStr($monitor->MotionFrameSkip()) ?>"/>
-      <input type="hidden" name="newMonitor[AnalysisUpdateDelay]" value="<?php echo validHtmlStr($monitor->AnalysisUpdateDelay()) ?>"/>
-      <input type="hidden" name="newMonitor[FPSReportInterval]" value="<?php echo validHtmlStr($monitor->FPSReportInterval()) ?>"/>
-      <input type="hidden" name="newMonitor[DefaultRate]" value="<?php echo validHtmlStr($monitor->DefaultRate()) ?>"/>
-      <input type="hidden" name="newMonitor[DefaultScale]" value="<?php echo validHtmlStr($monitor->DefaultScale()) ?>"/>
-      <input type="hidden" name="newMonitor[DefaultCodec]" value="<?php echo validHtmlStr($monitor->DefaultCodec()) ?>"/>
-      <input type="hidden" name="newMonitor[WebColour]" value="<?php echo validHtmlStr($monitor->WebColour()) ?>"/>
-      <input type="hidden" name="newMonitor[Exif]" value="<?php echo validHtmlStr($monitor->Exif()) ?>"/>
-<?php
-}
-if ( $tab != 'misc' ) {
-?>
-      <input type="hidden" name="newMonitor[SignalCheckPoints]" value="<?php echo validHtmlStr($monitor->SignalCheckPoints()) ?>"/>
-      <input type="hidden" name="newMonitor[SignalCheckColour]" value="<?php echo validHtmlStr($monitor->SignalCheckColour()) ?>"/>
-<?php
-}
-?>
-      <table id="contentTable" class="major">
-        <tbody>
-<?php
-switch ( $tab ) {
+switch ($name) {
   case 'general' :
     {
+      if (!$monitor->Id() and count($monitors)) {
+        $monitor_ids = array_keys($monitors_by_id);
+        $available_monitor_ids = array_diff(range(min($monitor_ids),max($monitor_ids)), $monitor_ids);
 ?>
-          <tr class="Name">
-            <td><?php echo translate('Name') ?></td>
-            <td><input type="text" name="newMonitor[Name]" value="<?php echo validHtmlStr($monitor->Name()) ?>"/></td>
-          </tr>
-          <tr class="Notes">
-            <td><?php echo translate('Notes') ?></td>
-            <td><textarea name="newMonitor[Notes]" rows="4"><?php echo validHtmlStr($monitor->Notes()) ?></textarea></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('Server') ?></td><td>
+              <li class="Id">
+                <label><?php echo translate('Id') ?></label>
+                <input type="number" step="1" min="1" name="newMonitor[Id]" placeholder="<?php echo translate('leave blank for auto') ?>"/><br/>
+<?php 
+        if (count($available_monitor_ids)) {
+          echo 'Some available ids: '.implode(', ', array_slice($available_monitor_ids, 0, 10));
+        }
+?>
+              </li>
 <?php
-      $servers = array(''=>'None','auto'=>'Auto');
-      foreach ( ZM\Server::find(NULL, array('order'=>'lower(Name)')) as $Server ) {
+      } # end if ! $monitor->Id() and count($monitors)
+      if ($monitor->Deleted()) {
+?>
+              <li class="Deleted warning">
+                <label><?php echo translate('Monitor is Deleted, Undelete') ?>?</label>
+                <input type="checkbox" name="newMonitor[Deleted]" value="0"/>
+              </li>
+<?php
+      }
+?>
+              <li class="Name">
+                <label><?php echo translate('Name') ?></label>
+                <input type="text" name="newMonitor[Name]" value="<?php echo validHtmlStr($monitor->Name()) ?>" autocomplete="monitor_name"/>
+              </li>
+              <li class="Notes">
+                <label><?php echo translate('Notes') ?></label>
+                <textarea name="newMonitor[Notes]" rows="4"><?php echo validHtmlStr($monitor->Notes()) ?></textarea>
+              </li>
+              <li class="Manufacturer">
+                <label><?php echo translate('Manufacturer') ?></label>
+<?php 
+  require_once('includes/Manufacturer.php');
+  $manufacturers = array(''=>translate('Unknown'));
+  foreach ( ZM\Manufacturer::find( null, array('order'=>'lower(Name)')) as $Manufacturer ) {
+    $manufacturers[$Manufacturer->Id()] = $Manufacturer->Name();
+  }
+  echo htmlSelect('newMonitor[ManufacturerId]', $manufacturers, $monitor->ManufacturerId(),
+      array('class'=>'chosen','data-on-change-this'=>'ManufacturerId_onchange'));
+?>
+                  <input type="text" name="newMonitor[Manufacturer]"
+                    placeholder="enter new manufacturer name"
+                    autocomplete="new_manufacturer"
+                    <?php echo $monitor->ManufacturerId() ? ' style="display:none" disabled="disabled"' : '' ?>
+                    data-on-input-this="Manufacturer_onchange"
+                  />
+              </li>
+              <li class="Model">
+                <label><?php echo translate('Model') ?></label>
+<?php 
+  require_once('includes/Model.php');
+  $models = array(''=>translate('Unknown'));
+  # We still do the query even if manufacturerId is empty so that it lists models with no manufacturer
+  foreach ( ZM\Model::find(array('ManufacturerId'=>$monitor->ManufacturerId()), array('order'=>'lower(Name)')) as $Model ) {
+    $models[$Model->Id()] = $Model->Name();
+  }
+  # This is to handle a case where the model's manufacturerId didn't get set, or somehow is no longer valid
+  if ($monitor->ModelId() and !isset($models[$monitor->ModelId()])) {
+    $model = $monitor->Model();
+    if (!$model->ManufacturerId() or !ZM\Manufacturer::find_one(['Id'=>$model->ManufacturerId()])) {
+      $model->save(['ManufacturerId'=>$monitor->ManufacturerId()]);
+    }
+  }
+  echo htmlSelect('newMonitor[ModelId]', $models, $monitor->ModelId(),
+      array('class'=>'chosen', 'data-on-change-this'=>'ModelId_onchange'));
+?>
+                  <input type="text" name="newMonitor[Model]"
+                    placeholder="enter new model name"
+                    autocomplete="new_model"
+                    <?php echo $monitor->ModelId() ? ' style="display:none" disabled="disabled"' : '' ?>
+                    data-on-input-this="Model_onchange"
+                    />
+              </li>
+<?php 
+      $Servers = ZM\Server::find(NULL, array('order'=>'lower(Name)'));
+      if (count($Servers)) {
+?>
+              <li class="Server">
+                <label><?php echo translate('Server') ?></label>
+<?php
+      $servers = array(''=>'None', 'auto'=>'Auto');
+      foreach ($Servers as $Server) {
         $servers[$Server->Id()] = $Server->Name();
       }
-      echo htmlSelect( 'newMonitor[ServerId]', $servers, $monitor->ServerId() );
+      echo htmlSelect('newMonitor[ServerId]', $servers, $monitor->ServerId());
 ?>
-            </td>
-          </tr>
-          <tr>
-            <td><?php echo translate('SourceType') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Type]', $sourceTypes, $monitor->Type()); ?></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('Function') ?></td>
-            <td>
+              </li>
+<?php 
+      } # end if count($Servers)
+?>
+              <li class="Type">
+                <label><?php echo translate('SourceType') ?></label>
+                <?php echo htmlSelect('newMonitor[Type]', $sourceTypes, $monitor->Type()); ?>
+              </li>
 <?php
-      $function_options = array();
-      foreach ( getEnumValues('Monitors', 'Function') as $f ) {
-        $function_options[$f] = translate("Fn$f");
-      }
-      echo htmlSelect('newMonitor[Function]', $function_options, $monitor->Function());
+      $groups_dropdown = ZM\Group::get_dropdown_options();
+      if (count($groups_dropdown)) {
 ?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('Enabled') ?></td>
-          <td><input type="checkbox" name="newMonitor[Enabled]" value="1"<?php if ( $monitor->Enabled() ) { ?> checked="checked"<?php } ?>/></td>
-        </tr>
-<?php
-      if ( $monitor->Type() != 'WebSite' ) {
-?>
-        <tr>
-          <td><?php echo translate('LinkedMonitors') ?>&nbsp;(<?php echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_LINKED_MONITORS', 'zmOptionHelp', 'optionhelp', '?' ) ?>)</td>
-          <td>
-<?php
-      $monitors = dbFetchAll('SELECT Id, Name FROM Monitors ORDER BY Sequence ASC');
-      $monitor_options = array();
-      foreach ( $monitors as $linked_monitor ) {
-        if ( (!$monitor->Id() || ($monitor->Id()!= $linked_monitor['Id'])) && visibleMonitor($linked_monitor['Id']) ) {
-          $monitor_options[$linked_monitor['Id']] = validHtmlStr($linked_monitor['Name']);
-        }
-      }
-
-      echo htmlSelect(
-        'newMonitor[LinkedMonitors][]',
-        $monitor_options,
-        ( $monitor->LinkedMonitors() ? explode(',', $monitor->LinkedMonitors()) : array() ),
-        array('class'=>'chosen','multiple'=>'multiple')
-      );
-?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('Groups'); ?></td>
-          <td><select name="newMonitor[GroupIds][]" multiple="multiple" class="chosen"><?php
-            echo htmlOptions(ZM\Group::get_dropdown_options(), $monitor->GroupIds());
-            ?></select></td>
-        </tr>
-        <tr>
-          <td><?php echo translate('AnalysisFPS') ?></td>
-          <td><input type="number" name="newMonitor[AnalysisFPSLimit]" value="<?php echo validHtmlStr($monitor->AnalysisFPSLimit()) ?>" min="0" step="any"/></td>
-        </tr>
-<?php
-      if ( $monitor->Type() != 'Local' && $monitor->Type() != 'File' && $monitor->Type() != 'NVSocket' ) {
-?>
-            <tr>
-              <td><?php echo translate('MaximumFPS') ?>&nbsp;(<?php echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_MAXFPS', 'zmOptionHelp', 'optionhelp', '?' ) ?>)</td>
-              <td>
-                <input type="number" name="newMonitor[MaxFPS]" value="<?php echo validHtmlStr($monitor->MaxFPS()) ?>" min="0" step="any"/>
-                <span id="newMonitor[MaxFPS]" style="color:red;<?php echo $monitor->MaxFPS() ? '' : 'display:none;' ?>">CAUTION: See the help text</span>
-              </td>
-            </tr>
-            <tr>
-              <td><?php echo translate('AlarmMaximumFPS') ?>&nbsp;(<?php echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_MAXFPS', 'zmOptionHelp', 'optionhelp', '?' ) ?>)</td>
-              <td>
-                <input type="number" name="newMonitor[AlarmMaxFPS]" value="<?php echo validHtmlStr($monitor->AlarmMaxFPS()) ?>" min="0" step="any"/>
-                <span id="newMonitor[AlarmMaxFPS]" style="color:red;<?php echo $monitor->AlarmMaxFPS() ? '' : 'display:none;' ?>">CAUTION: See the help text</span>
-              </td>
-            </tr>
-<?php
-      } else {
-?>
-            <tr>
-              <td><?php echo translate('MaximumFPS') ?></td>
-              <td><input type="number" name="newMonitor[MaxFPS]" value="<?php echo validHtmlStr($monitor->MaxFPS()) ?>" min="0" step="any"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('AlarmMaximumFPS') ?></td>
-              <td><input type="number" name="newMonitor[AlarmMaxFPS]" value="<?php echo validHtmlStr($monitor->AlarmMaxFPS()) ?>" min="0" step="any"/></td>
-            </tr>
-<?php
-      }
-      if ( ZM_FAST_IMAGE_BLENDS ) {
-?>
-          <tr>
-            <td><?php echo translate('RefImageBlendPct') ?></td>
-            <td><?php echo htmlSelect('newMonitor[RefBlendPerc]', $fastblendopts, $monitor->RefBlendPerc()); ?></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('AlarmRefImageBlendPct') ?></td>
-            <td><?php echo htmlSelect('newMonitor[AlarmRefBlendPerc]', $fastblendopts_alarm, $monitor->AlarmRefBlendPerc()); ?></td>
-          </tr>
-          <?php
-      } else {
-?>
-            <tr><td><?php echo translate('RefImageBlendPct') ?></td><td><input type="text" name="newMonitor[RefBlendPerc]" value="<?php echo validHtmlStr($monitor->RefBlendPerc()) ?>" size="4"/></td></tr>
-            <tr><td><?php echo translate('AlarmRefImageBlendPct') ?></td><td><input type="text" name="newMonitor[AlarmRefBlendPerc]" value="<?php echo validHtmlStr($monitor->AlarmRefBlendPerc()) ?>" size="4"/></td></tr>
-<?php
+              <li class="Groups">
+                <label><?php echo translate('Groups'); ?></label>
+                <select name="newMonitor[GroupIds][]" multiple="multiple" class="chosen"><?php
+                  echo htmlOptions($groups_dropdown, $monitor->GroupIds());
+                  ?></select>
+              </li>
+<?php 
       }
 ?>
-            <tr><td><?php echo translate('Triggers') ?></td><td>
+              <li class="Triggers"><label><?php echo translate('Triggers') ?></label>
 <?php
       $optTriggers = getSetValues('Monitors', 'Triggers');
       $breakCount = (int)(ceil(count($optTriggers)));
@@ -743,78 +595,169 @@ switch ( $tab ) {
         echo '<em>'.translate('NoneAvailable').'</em>';
       }
 ?>
-        </td></tr>
-        <?php
-        }
+            </li>
+<?php
+      break;
+    }
+    case 'onvif' :
+    {
+?>
+            <li class="ONVIF_URL">
+              <label><?php echo translate('ONVIF_URL') ?></label>
+              <input type="text" name="newMonitor[ONVIF_URL]" value="<?php echo validHtmlStr($monitor->ONVIF_URL()) ?>"/>
+            </li>
+            <li class="ONVIF_Events_Path">
+              <label><?php echo translate('ONVIF_EVENTS_PATH') ?></label>
+              <input type="text" name="newMonitor[ONVIF_Events_Path]" value="<?php echo validHtmlStr($monitor->ONVIF_Events_Path()) ?>"/>
+            </li>
+            <li class="ONVIF_Username">
+              <label><?php echo translate('Username') ?></label>
+              <input type="text" name="newMonitor[ONVIF_Username]" value="<?php echo validHtmlStr($monitor->ONVIF_Username()) ?>" autocomplete="onvif_username"/>
+            </li>
+            <li class="ONVIF_Password">
+              <label><?php echo translate('Password') ?></label>
+              <input type="text" class="masked-input" id="newMonitor[ONVIF_Password]" name="newMonitor[ONVIF_Password]" value="<?php echo validHtmlStr($monitor->ONVIF_Password()) ?>" autocomplete="onvif_password"/>
+              <span class="material-icons md-18" data-on-click-this="toggle_password_visibility" data-password-input="newMonitor[ONVIF_Password]">visibility</span>
+            </li>
+            <li class="ONVIF_Options">
+              <label><?php echo translate('ONVIF_Options') ?></label>
+              <input type="text" name="newMonitor[ONVIF_Options]" value="<?php echo validHtmlStr($monitor->ONVIF_Options()) ?>"/>
+            </li>
+            <li class="ONVIF_Alarm_Text">
+              <label><?php echo translate('ONVIF_Alarm_Text'); echo makeHelpLink('OPTIONS_ONVIF_Alarm_Text') ?></label>
+              <input type="text" name="newMonitor[ONVIF_Alarm_Text]" value="<?php echo validHtmlStr($monitor->ONVIF_Alarm_Text()) ?>"/>
+            </li>
+            <li class="SOAP_wsa_compl">
+              <label><?php echo translate('SOAP WSA COMPLIANCE'); echo makeHelpLink('OPTIONS_SOAP_wsa') ?></label>
+              <input type="checkbox" name="newMonitor[SOAP_wsa_compl]" value="1"<?php echo $monitor->SOAP_wsa_compl()  ? ' checked="checked"' : '' ?>/>
+            </li>
+            <li class="ONVIF_Event_Listener">
+              <label><?php echo translate('ONVIF_Event_Listener') ?></label>
+              <?php echo html_radio('newMonitor[ONVIF_Event_Listener]', array('1'=>translate('Enabled'), '0'=>translate('Disabled')), $monitor->ONVIF_Event_Listener()); ?>
+            </li>
+<?php
         break;
     }
-  case 'source' :
+    case 'source' :
     {
-      if ( ZM_HAS_V4L && $monitor->Type() == 'Local' ) {
 ?>
-          <tr><td><?php echo translate('DevicePath') ?></td><td><input type="text" name="newMonitor[Device]" value="<?php echo validHtmlStr($monitor->Device()) ?>"/></td></tr>
-          <tr>
-            <td><?php echo translate('CaptureMethod') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Method]', $localMethods, $monitor->Method(), array('onchange'=>'submitTab', 'data-tab-name'=>$tab) ); ?></td>
-          </tr>
+            <li class="Capturing">
+              <label><?php echo translate('Capturing'); echo makeHelpLink('OPTIONS_CAPTURING'); ?></label>
 <?php
-        if ( ZM_HAS_V4L1 && $monitor->Method() == 'v4l1' ) {
+        echo htmlSelect('newMonitor[Capturing]', ZM\Monitor::getCapturingOptions(), $monitor->Capturing());
 ?>
-          <tr>
-            <td><?php echo translate('DeviceChannel') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Channel]', $v4l1DeviceChannels, $monitor->Channel()); ?></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('DeviceFormat') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Format]', $v4l1DeviceFormats, $monitor->Format()); ?></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('CapturePalette') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Palette]', $v4l1LocalPalettes, $monitor->Palette()); ?></td>
-          </tr>
+              <div id="capturing_help">
 <?php
-        } else {
+        foreach (ZM\Monitor::getCapturingOptions() as $fn => $translated) {
+          if (isset($OLANG['CAPTURING_'.strtoupper($fn)])) {
+            echo '<div class="form-text" id="'.$fn.'Help">'.$OLANG['CAPTURING_'.strtoupper($fn)]['Help'].'</div>';
+          }
+        }
 ?>
-          <tr>
-            <td><?php echo translate('DeviceChannel') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Channel]', $v4l2DeviceChannels, $monitor->Channel()); ?></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('DeviceFormat') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Format]', $v4l2DeviceFormats, $monitor->Format()); ?></td>
-          </tr>
-         <tr>
-            <td><?php echo translate('CapturePalette') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Palette]', $v4l2LocalPalettes, $monitor->Palette()); ?></td>
-          </tr>
+                </div>
+            </li>
+<?php
+      if ( ZM_HAS_V4L2 && $monitor->Type() == 'Local' ) {
+        $devices = [''=>translate('Other')];
+        foreach (glob('/dev/video*') as $device) 
+          $devices[$device] = $device;
+        if ($monitor->Device() and !isset($devices[$monitor->Device()]))
+          $devices[$monitor->Device()] = $monitor->Device();
+?>
+          <li class="Device">
+            <label><?php echo translate('DevicePath') ?></label>
+<?php echo count($devices) > 1 ? htmlSelect('newMonitor[Devices]', $devices, $monitor->Device()) : ''; ?>
+            <input type="text" name="newMonitor[Device]" value="<?php echo validHtmlStr($monitor->Device()) ?>"
+<?php echo (count($devices) > 1 and $monitor->Device() != '') ? 'style="display: none;"' : '' ?> autocomplete="off"
+              pattern="/dev/[\w\/.\-]+"
+              title="<?php echo translate('BadDevice') ?> (e.g. /dev/video0)"
+            />
+          </li>
+<?php
+$localMethods = array(
+    'v4l2' => 'Video For Linux version 2',
+    );
+if (!ZM_HAS_V4L2)
+  unset($localMethods['v4l2']);
+if (!isset($localMethods[$monitor->Method()])) $monitor->Method(array_keys($localMethods)[0]);
+if (count($localMethods)>1) {
+  echo '<li><label>'.translate('CaptureMethod').'</label>';
+  echo htmlSelect('newMonitor[Method]', $localMethods, $monitor->Method(), ['data-on-change'=>'submitTab', 'data-tab-name'=>$tab] );
+  echo '</li>'.PHP_EOL;
+} else {
+  echo '<input type="hidden" name="newMonitor[Method]" value="'.validHtmlStr($monitor->Method()).'"/>'.PHP_EOL;
+}
+        if ( ZM_HAS_V4L2 && $monitor->Method() == 'v4l2' ) {
+?>
+          <li class="Channel">
+            <label><?php echo translate('DeviceChannel') ?></label>
+            <?php echo htmlSelect('newMonitor[Channel]', $v4l2DeviceChannels, $monitor->Channel()); ?>
+          </li>
+          <li class="Format">
+            <label><?php echo translate('DeviceFormat') ?></label>
+            <?php echo htmlSelect('newMonitor[Format]', $v4l2DeviceFormats, $monitor->Format()); ?>
+          </li>
+          <li class="Palette">
+            <label><?php echo translate('CapturePalette') ?></label>
+            <?php echo htmlSelect('newMonitor[Palette]', $v4l2LocalPalettes, $monitor->Palette()); ?>
+          </li>
 <?php
         }
 ?>
-          <tr><td><?php echo translate('V4LMultiBuffer') ?></td><td>
+          <li class="V4LMultiBuffer"><label><?php echo translate('V4LMultiBuffer') ?></label>
             <input type="radio" name="newMonitor[V4LMultiBuffer]" id="newMonitor[V4LMultiBuffer]1" value="1" <?php echo ( $monitor->V4LMultiBuffer() == '1' ? 'checked="checked"' : '' ) ?>/>
             <label for="newMonitor[V4LMultiBuffer]1">Yes</label>
             <input type="radio" name="newMonitor[V4LMultiBuffer]" id="newMonitor[V4LMultiBuffer]0" value="0" <?php echo ( $monitor->V4LMultiBuffer() == '0' ? 'checked="checked"' : '' ) ?>/>
             <label for="newMonitor[V4LMultiBuffer]0">No</label>
             <input type="radio" name="newMonitor[V4LMultiBuffer]" id="newMonitor[V4LMultiBuffer]" value="" <?php echo ( $monitor->V4LMultiBuffer() == '' ? 'checked="checked"' : '' ) ?>/>
-            <label for="newMonitor[V4LMultiBuffer]">Use Config Value</label>
-          </td></tr>
-          <tr>
-            <td><?php echo translate('V4LCapturesPerFrame') ?></td>
-            <td><input type="number" name="newMonitor[V4LCapturesPerFrame]" value="<?php echo validHtmlStr($monitor->V4LCapturesPerFrame()); ?>" min="1"/></td>
-          </tr>
+            <label for="newMonitor[V4LMultiBuffer]">Use Config Value
+          </li>
+          <li class="V4LCapturesPerFrame"api:
+  origin: "*"
+>
+            <label><?php echo translate('V4LCapturesPerFrame') ?></label>
+            <input type="number" name="newMonitor[V4LCapturesPerFrame]" value="<?php echo validHtmlStr($monitor->V4LCapturesPerFrame()); ?>" min="1"/>
+          </li>
 <?php
 
       } else if ( $monitor->Type() == 'NVSocket' ) {
 include('_monitor_source_nvsocket.php');
+      } else if ( $monitor->Type() == 'VNC' ) {
+?>
+        <li class="Host">
+          <label><?php echo translate('RemoteHostName') ?></label>
+          <input type="text" name="newMonitor[Host]" value="<?php echo validHtmlStr($monitor->Host()) ?>"/>
+        </li>
+        <li class="Port">
+          <label><?php echo translate('RemoteHostPort') ?></label>
+          <input type="number" name="newMonitor[Port]" value="<?php echo validHtmlStr($monitor->Port()) ?>" step="1" min="1" max="65536" />
+        </li>
+        <li class="User">
+          <label><?php echo translate('Username') ?></label>
+          <input type="text" name="newMonitor[User]" value="<?php echo validHtmlStr($monitor->User()) ?>" autocomplete="source_username"/>
+        </li>
+        <li class="Pass">
+          <label><?php echo translate('Password') ?></label>
+          <input type="text" class="masked-input" id="newMonitor[Pass]" name="newMonitor[Pass]" value="<?php echo validHtmlStr($monitor->Pass()) ?>" autocomplete="source_password"/>
+          <span class="material-icons md-18" data-on-click-this="toggle_password_visibility" data-password-input="newMonitor[Pass]">visibility</span>
+        </li>
+<?php
       } else if ( $monitor->Type() == 'Remote' ) {
 ?>
-          <tr>
-            <td><?php echo translate('RemoteProtocol') ?></td>
-            <td><?php echo htmlSelect('newMonitor[Protocol]', $remoteProtocols, $monitor->Protocol(), "updateMethods( this );if(this.value=='rtsp'){\$('RTSPDescribe').setStyle('display','table-row');}else{\$('RTSPDescribe').hide();}" ); ?></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('RemoteMethod') ?></td>
-            <td>
+          <li class="User"><label><?php echo translate('Username') ?></label>
+            <input type="text" name="newMonitor[User]" value="<?php echo validHtmlStr($monitor->User()) ?>"/>
+          </li>
+          <li class="Pass">
+            <label><?php echo translate('Password') ?></label>
+              <input type="text" class="masked-input" id="newMonitor[Pass]" name="newMonitor[Pass]" value="<?php echo validHtmlStr($monitor->Pass()) ?>" autocomplete="source_password"/>
+              <span class="material-icons md-18" data-on-click-this="toggle_password_visibility" data-password-input="newMonitor[Pass]">visibility</span>
+          </li>
+          <li class="Protocol">
+            <label><?php echo translate('RemoteProtocol') ?></label>
+            <?php echo htmlSelect('newMonitor[Protocol]', $remoteProtocols, $monitor->Protocol(), ['data-on-change-this'=>'updateMethods'] ); ?>
+          </li>
+          <li class="Method">
+            <label><?php echo translate('RemoteMethod') ?></label>
 <?php
         if ( !$monitor->Protocol() || $monitor->Protocol() == 'http' ) {
           echo htmlSelect('newMonitor[Method]', $httpMethods, $monitor->Method());
@@ -822,420 +765,955 @@ include('_monitor_source_nvsocket.php');
           echo htmlSelect('newMonitor[Method]', $rtspMethods, $monitor->Method());
         }
 ?>
-            </td>
-          </tr>
-          <tr><td><?php echo translate('RemoteHostName') ?></td><td><input type="text" name="newMonitor[Host]" value="<?php echo validHtmlStr($monitor->Host()) ?>"/></td></tr>
-          <tr><td><?php echo translate('RemoteHostPort') ?></td><td><input type="number" name="newMonitor[Port]" value="<?php echo validHtmlStr($monitor->Port()) ?>" min="0" max="65535"/></td></tr>
-          <tr><td><?php echo translate('RemoteHostPath') ?></td><td><input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/></td></tr>
+          </li>
+          <li class="Host">
+            <label><?php echo translate('RemoteHostName') ?></label>
+            <input type="text" name="newMonitor[Host]" value="<?php echo validHtmlStr($monitor->Host()) ?>"/>
+          </li>
+          <li class="Port"><label><?php echo translate('RemoteHostPort') ?></label>
+            <input type="number" name="newMonitor[Port]" value="<?php echo validHtmlStr($monitor->Port()) ?>" min="0" max="65535"/>
+          </li>
+          <li class="Path"><label><?php echo translate('RemoteHostPath') ?></label>
+            <input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/>
+          </li>
 <?php
       } else if ( $monitor->Type() == 'File' ) {
 ?>
-          <tr><td><?php echo translate('SourcePath') ?></td><td><input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/></td></tr>
-<?php
-      } elseif ( $monitor->Type() == 'cURL' ) {
-?>
-          <tr><td><?php echo 'URL' ?></td><td><input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/></td></tr>
-          <tr><td><?php echo 'Username' ?></td><td><input type="text" name="newMonitor[User]" value="<?php echo validHtmlStr($monitor->User()) ?>"/></td></tr>
-          <tr><td><?php echo 'Password' ?></td><td><input type="text" name="newMonitor[Pass]" value="<?php echo validHtmlStr($monitor->Pass()) ?>"/></td></tr>
+          <li class="Path">
+            <label><?php echo translate('SourcePath') ?></label>
+            <input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/>
+          </li>
 <?php
       } elseif ( $monitor->Type() == 'WebSite' ) {
 ?>
-          <tr>
-            <td><?php echo translate('WebSiteUrl') ?></td>
-            <td><input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('Width') ?> (<?php echo translate('Pixels') ?>)</td>
-            <td><input type="number" name="newMonitor[Width]" value="<?php echo validHtmlStr($monitor->Width()) ?>" min="1"/></td>
-          </tr>
-          <tr>
-            <td><?php echo translate('Height') ?> (<?php echo translate('Pixels') ?>)</td>
-            <td><input type="number" name="newMonitor[Height]" value="<?php echo validHtmlStr($monitor->Height()) ?>" min="1"/></td>
-          </tr>
-          <tr>
-            <td><?php echo 'Web Site Refresh (Optional)' ?></td>
-            <td><input type="number" name="newMonitor[Refresh]" value="<?php echo validHtmlStr($monitor->Refresh()) ?>" min="1"/></td>
-          </tr>
+          <li class="Path">
+            <label><?php echo translate('WebSiteUrl') ?></label>
+            <input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>"/>
+          </li>
+          <li class="Width">
+            <label><?php echo translate('Width') ?> (<?php echo translate('Pixels') ?>)</label>
+            <input type="number" name="newMonitor[Width]" value="<?php echo validHtmlStr($monitor->Width()) ?>" min="1" step="1"/>
+          </li>
+          <li class="Height">
+            <label><?php echo translate('Height') ?> (<?php echo translate('Pixels') ?>)</label>
+            <input type="number" name="newMonitor[Height]" value="<?php echo validHtmlStr($monitor->Height()) ?>" min="1" step="1"/>
+          </li>
+	        <li class="Refresh">
+            <label><?php echo 'Web Site Refresh (Optional)' ?></label>
+            <input type="number" name="newMonitor[Refresh]" value="<?php echo validHtmlStr($monitor->Refresh()) ?>" min="1" step="1"/>
+          </li>
 <?php
       } else if ( $monitor->Type() == 'Ffmpeg' || $monitor->Type() == 'Libvlc' ) {
 ?>
-          <tr class="SourcePath">
-            <td><?php echo translate('SourcePath') ?></td>
-            <td><input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>" /></td>
-          </tr>
-          <tr>
-            <td><?php
- echo translate('RemoteMethod');
- echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_RTSPTrans', 'zmOptionHelp', 'optionhelp', '?' );
-?>)</td>
-            <td><?php echo htmlSelect('newMonitor[Method]', $rtspFFMpegMethods, $monitor->Method()) ?></td>
-          </tr>
-          <tr class="SourceOptions">
-            <td><?php echo translate('Options') ?>&nbsp;(<?php echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_'.strtoupper($monitor->Type()), 'zmOptionHelp', 'optionhelp', '?' ) ?>)</td>
-            <td><input type="text" name="newMonitor[Options]" value="<?php echo validHtmlStr($monitor->Options()) ?>"/></td>
-          </tr>
+          <li class="SourcePath">
+            <label><?php echo translate('SourcePath') ?></label>
+            <input type="text" name="newMonitor[Path]" value="<?php echo validHtmlStr($monitor->Path()) ?>" />
+          </li>
+          <li class="User"><label><?php echo translate('Username') ?></label>
+            <input type="text" name="newMonitor[User]" value="<?php echo validHtmlStr($monitor->User()) ?>" autocomplete="source_username"/>
+          </li>
+          <li class="Pass">
+            <label><?php echo translate('Password') ?></label>
+            <input type="text" class="masked-input" id="newMonitor[Pass]" name="newMonitor[Pass]" value="<?php echo validHtmlStr($monitor->Pass()) ?>" autocomplete="source_password"/>
+            <span class="material-icons md-18" data-on-click-this="toggle_password_visibility" data-password-input="newMonitor[Pass]">visibility</span>
+          </li>
+          <li class="Method">
+            <label><?php echo translate('RemoteMethod'); echo makeHelpLink('OPTIONS_RTSPTrans') ?></label>
+            <?php echo htmlSelect('newMonitor[Method]', $rtspFFMpegMethods, $monitor->Method()) ?>
+          <li>
+          <li class="SourceOptions">
+            <label><?php echo translate('Options'); echo makeHelpLink('OPTIONS_'.strtoupper($monitor->Type())) ?></label>
+            <textarea name="newMonitor[Options]" rows="<?php echo max(2, count(preg_split('/[,\r\n]+/', $monitor->Options()))) ?>"><?php echo validHtmlStr($monitor->Options()) ?></textarea>
+          <li>
 <?php
       }
+?>
+          <li class="Decoding">
+            <label><?php echo translate('Decoding'); echo makeHelpLink('FUNCTION_DECODING');?></label>
+            
+<?php
+        echo htmlSelect('newMonitor[Decoding]', ZM\Monitor::getDecodingOptions(), $monitor->Decoding());
+?>
+                <div id="decoding_help">
+<?php
+        foreach (ZM\Monitor::getDecodingOptions() as $fn => $translated) {
+          if (isset($OLANG['FUNCTION_DECODING_'.strtoupper($fn)])) {
+            echo '<div class="form-text" id="'.$fn.'Help">'.$OLANG['FUNCTION_DECODING_'.strtoupper($fn)]['Help'].'</div>';
+          }
+        }
+?>
+                </div>
+            
+          <li>
+<?php
       if ( $monitor->Type() == 'Ffmpeg' ) {
 ?>
-          <tr class="DecoderHWAccelName">
-            <td><?php echo translate('DecoderHWAccelName') ?>
-                (<?php echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_DECODERHWACCELNAME', 'zmOptionHelp', 'optionhelp', '?') ?>)
-            </td>
-            <td><input type="text" name="newMonitor[DecoderHWAccelName]" value="<?php echo validHtmlStr($monitor->DecoderHWAccelName()) ?>"/></td>
-          </tr>
-          <tr class="DecoderHWAccelDevice">
-            <td><?php echo translate('DecoderHWAccelDevice') ?>
-                (<?php echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_DECODERHWACCELDEVICE', 'zmOptionHelp', 'optionhelp', '?') ?>)
-            </td>
-            <td><input type="text" name="newMonitor[DecoderHWAccelDevice]" value="<?php echo validHtmlStr($monitor->DecoderHWAccelDevice()) ?>"/></td>
-          </tr>
+          <li class="SourceSecondPath">
+            <label><?php echo translate('SourceSecondPath') ?></label>
+            <input type="text" name="newMonitor[SecondPath]" value="<?php echo validHtmlStr($monitor->SecondPath()) ?>" data-on-input-this="SecondPath_onChange"/>
+          <li>
+          <li class="Decoder">
+            <label><?php echo translate('Decoder') ?></label>
+<?php
+$decoders = array(
+  'auto' => translate('Auto'),
+  'libx264' => 'libx264',
+  'h264' => 'h264',
+  'h264_cuvid' => 'h264_cuvid',
+  'h264_nvmpi' => 'h264_nvmpi',
+  'h264_mmal'   => 'h264_mmal',
+  'h264_omx' => 'h264_omx',
+  'h264_qsv' => 'h264_qsv',
+  'h264_vaapi' => 'h264_vaapi',
+  'h264_v4l2m2m' => 'h264_v4l2m2m',
+  'libx265' => 'libx265',
+  'hevc' => 'hevc',
+  'hevc_cuvid' => 'hevc_cuvid',
+  'hevc_nvmpi' => 'hevc_nvmpi',
+  'hevc_qsv' => 'hevc_qsv',
+  'hevc_vaapi' => 'hevc_vaapi',
+  'vp8_nvmpi' => 'vp8_nvmpi',
+  'libvpx-vp9' => 'libvpx-vp9',
+  'vp9_qsv' => 'vp9-qsv',
+  'vp9_cuvid' => 'vp9_cuvid',
+  'vp9_nvmpi' => 'vp9_nvmpi',
+  'vp9_v4l2m2m' => 'vp9_v4l2m2m',
+  'libsvtav1' => 'libsvtav1',
+  'libaom-av1'  => 'libaom-av1',
+  'libdav1d'    => 'libdav1d',
+  'av1' => 'av1',
+  'av1_qsv' => 'av1_qsv',
+  'av1_cuvid' => 'av1_cuvid',
+);
+echo htmlSelect('newMonitor[Decoder]', $decoders, $monitor->Decoder());
+?>
+            </li>
+          <li class="DecoderHWAccelName">
+            <label>
+              <?php echo translate('DecoderHWAccelName'); echo makeHelpLink('OPTIONS_DECODERHWACCELNAME') ?>
+            </label>
+            <input type="text" name="newMonitor[DecoderHWAccelName]" value="<?php echo validHtmlStr($monitor->DecoderHWAccelName()) ?>"/>
+          <li>
+          <li class="DecoderHWAccelDevice">
+            <label><?php echo translate('DecoderHWAccelDevice') ?>
+                <?php echo makeHelpLink('OPTIONS_DECODERHWACCELDEVICE') ?>
+            </label>
+            <input type="text" name="newMonitor[DecoderHWAccelDevice]" value="<?php echo validHtmlStr($monitor->DecoderHWAccelDevice()) ?>"/>
+          <li>
 <?php
       }
       if ( $monitor->Type() != 'NVSocket' && $monitor->Type() != 'WebSite' ) {
 ?>
-        <tr>
-          <td><?php echo translate('TargetColorspace') ?></td>
-          <td><?php echo htmlSelect('newMonitor[Colours]', $Colours, $monitor->Colours()) ?></td>
-        </tr>
-        <tr>
-          <td><?php echo translate('CaptureResolution') ?> (<?php echo translate('Pixels') ?>)</td>
-          <td>
-            <input type="number" name="newMonitor[Width]" value="<?php echo validHtmlStr($monitor->Width()) ?>" min="1"/>
-            <input type="number" name="newMonitor[Height]" value="<?php echo validHtmlStr($monitor->Height()) ?>" min="1"/>
-<?php echo htmlselect('dimensions_select', array(
-  ''=>translate('Custom'),
-  '176x120'=>'176x120 QCIF',
-  '176x144'=>'176x14',
-  '320x240'=>'320x240',
-  '320x200'=>'320x200',
-  '352x240'=>'352x240 CIF',
-  '352x480'=>'352x480',
-  '640x480'=>'640x480',
-  '640x400'=>'640x400',
-  '704x240'=>'704x240 2CIF',
-  '704x480'=>'704x480 4CIF',
-  '720x480'=>'720x480 D1',
-  '720x576'=>'720x576 D1 PAL',
-  '1280x720'=>'1280x720 720p',
-  '1280x800'=>'1280x800',
-  '1280x960'=>'1280x960 960p',
-  '1280x1024'=>'1280x1024 1MP',
-  '1600x1200'=>'1600x1200 2MP',
-  '1920x1080'=>'1920x1080 1080p',
-  '2048x1536'=>'2048x1536 3MP',
-  '2592x1944'=>'2592x1944 5MP',
-  '3840x2160'=>'3840x2160 4K UHD',
-), $monitor->Width().'x'.$monitor->Height()
-);
+        <li class="TargetColorspace">
+          <label><?php echo translate('TargetColorspace') ?></label>
+          <?php echo htmlSelect('newMonitor[Colours]', $Colours, $monitor->Colours()) ?>
+          <small class="text-muted">(<?php echo translate('DeprecatedColoursSetting') ?>)</small>
+        </li>
+        <li class="CaptureResolution">
+          <label><?php echo translate('CaptureResolution') ?> (<?php echo translate('Pixels') ?>)</label>
+          
+            <input type="number" name="newMonitor[Width]" value="<?php echo validHtmlStr($monitor->Width()) ?>" min="1" step="1"/>
+            <input type="number" name="newMonitor[Height]" value="<?php echo validHtmlStr($monitor->Height()) ?>" min="1" step="1"/>
+<?php 
+        $resolutions =  
+          array(
+            ''=>translate('Custom'),
+            '176x120'=>'176x120 QCIF',
+            '176x144'=>'176x14',
+            '320x240'=>'320x240',
+            '320x200'=>'320x200',
+            '352x240'=>'352x240 CIF',
+            '352x480'=>'352x480',
+            '640x360'=>'640x360',
+            '640x400'=>'640x400',
+            '640x480'=>'640x480',
+            '704x240'=>'704x240 2CIF',
+            '704x480'=>'704x480 4CIF',
+            '704x576'=>'704x576 D1 PAL',
+            '720x480'=>'720x480 Full D1 NTSC',
+            '720x576'=>'720x576 Full D1 PAL',
+            '1280x720'=>'1280x720 720p',
+            '1280x800'=>'1280x800',
+            '1280x960'=>'1280x960 960p',
+            '1280x1024'=>'1280x1024 1MP',
+            '1600x1200'=>'1600x1200 2MP',
+            '1920x1080'=>'1920x1080 1080p',
+            '2304x1296'=>'2304x1296 1296p 3MP',
+            '2048x1536'=>'2048x1536 3MP',
+            '2560x1440'=>'2560x1440 1440p QHD WQHD',
+            '2560x1920'=>'2560x1920 5MP',
+            '2688x1520'=>'2688x1520 4MP',
+	    '2960x1668'=>'2960x1668 5MP',
+            '3072x2048'=>'3072x2048 6MP',
+            '3840x2160'=>'3840x2160 4K UHD',
+          );
+        $selected = '';
+        if ( $monitor->Width() and $monitor->Height() ) {
+          $selected = $monitor->Width().'x'.$monitor->Height();
+          if ( ! isset($resolutions[$selected]) ) {
+            $resolutions[$selected] = $selected;
+          }
+        }
+        echo htmlselect('dimensions_select', $resolutions, $selected);
 ?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('PreserveAspect') ?></td>
-          <td><input type="checkbox" name="preserveAspectRatio" value="1"/></td>
-        </tr>
-        <tr>
-          <td><?php echo translate('Orientation') ?></td>
-          <td><?php echo htmlselect('newMonitor[Orientation]', $orientations, $monitor->Orientation());?></td>
-        </tr>
+          
+        </li>
+        <li class="PreserveAspect">
+          <label><?php echo translate('PreserveAspect') ?></label>
+          <input type="checkbox" name="preserveAspectRatio" value="1"/>
+        </li>
+        <li class="Orientation">
+          <label><?php echo translate('Orientation') ?></label>
+          <?php echo htmlselect('newMonitor[Orientation]', $orientations, $monitor->Orientation());?>
+        </li>
 <?php
       }
       if ( $monitor->Type() == 'Local' ) {
 ?>
-            <tr>
-              <td><?php echo translate('Deinterlacing') ?></td>
-              <td><?php echo htmlselect('newMonitor[Deinterlacing]', $deinterlaceopts_v4l2, $monitor->Deinterlacing())?></td>
-            </tr>
+            <li class="Deinterlacing">
+              <label><?php echo translate('Deinterlacing') ?></label>
+              <?php echo htmlselect('newMonitor[Deinterlacing]', $deinterlaceopts_v4l2, $monitor->Deinterlacing())?>
+            </li>
 <?php
         } else if ( $monitor->Type() != 'WebSite' ) {
 ?>
-            <tr>
-              <td><?php echo translate('Deinterlacing') ?></td>
-              <td><?php echo htmlselect('newMonitor[Deinterlacing]', $deinterlaceopts, $monitor->Deinterlacing())?></td>
-            </tr>
+            <li class="Deinterlacing">
+              <label><?php echo translate('Deinterlacing') ?></label>
+              <?php echo htmlselect('newMonitor[Deinterlacing]', $deinterlaceopts, $monitor->Deinterlacing())?>
+            </li>
 <?php
         }
         if ( $monitor->Type() == 'Remote' ) {
           ?>
-            <tr id="RTSPDescribe"<?php if ( $monitor->Protocol()!= 'rtsp' ) { echo ' style="display:none;"'; } ?>><td><?php echo translate('RTSPDescribe') ?>&nbsp;(<?php echo makePopupLink( '?view=optionhelp&amp;option=OPTIONS_RTSPDESCRIBE', 'zmOptionHelp', 'optionhelp', '?' ) ?>) </td><td><input type="checkbox" name="newMonitor[RTSPDescribe]" value="1"<?php if ( $monitor->RTSPDescribe() ) { ?> checked="checked"<?php } ?>/></td></tr>
+            <li id="RTSPDescribe"<?php if ( $monitor->Protocol()!= 'rtsp' ) { echo ' style="display:none;"'; } ?>>
+              <label><?php echo translate('RTSPDescribe'); echo makeHelpLink('OPTIONS_RTSPDESCRIBE') ?></label>
+              <input type="checkbox" name="newMonitor[RTSPDescribe]" value="1"<?php if ( $monitor->RTSPDescribe() ) { ?> checked="checked"<?php } ?>/>
+            </li>
 <?php
-      }
+      } # end if monitor->Type() == 'Remote'
+?>
+            <li class="MaxFPS">
+              <label><?php echo translate('MaximumFPS'); echo makeHelpLink('OPTIONS_MAXFPS') ?></label>
+              <input type="number" name="newMonitor[MaxFPS]" value="<?php echo validHtmlStr($monitor->MaxFPS()) ?>" min="0" step="any"/>
+<?php
+      if ( $monitor->Type() != 'Local' && $monitor->Type() != 'File' && $monitor->Type() != 'NVSocket' ) {
+?>
+                <span id="newMonitor[MaxFPS]" style="color:red;<?php echo $monitor->MaxFPS() ? '' : 'display:none;' ?>">CAUTION: See the help text</span>
+<?php } ?>
+              
+            </li>
+            <li class="AlarmMaximumFPS">
+              <label><?php echo translate('AlarmMaximumFPS'); echo makeHelpLink('OPTIONS_ALARMMAXFPS') ?></label>
+              <input type="number" name="newMonitor[AlarmMaxFPS]" value="<?php echo validHtmlStr($monitor->AlarmMaxFPS()) ?>" min="0" step="any"/>
+<?php
+      if ( $monitor->Type() != 'Local' && $monitor->Type() != 'File' && $monitor->Type() != 'NVSocket' ) {
+?>
+              <span id="newMonitor[AlarmMaxFPS]" style="color:red;<?php echo $monitor->AlarmMaxFPS() ? '' : 'display:none;' ?>">CAUTION: See the help text</span>
+<?php } ?>
+            </li>
+<?php
       break;
     }
-  case 'storage' :
+    case 'analysis' : {
 ?>
-          <tr>
-            <td><?php echo translate('StorageArea') ?></td>
-            <td>
+            <li class="Analysing">
+              <label><?php echo translate('Motion Detection') ?></label>
+              
 <?php
-      $storage_areas = array(0=>'Default');
-      foreach ( ZM\Storage::find(NULL, array('order'=>'lower(Name)')) as $Storage ) {
+        echo htmlSelect('newMonitor[Analysing]', ZM\Monitor::getAnalysingOptions(),
+            $monitor->Analysing(), array('data-on-change-this'=>'Analysing_onChange'));
+?>
+              <div id="Analysing_help">
+<?php
+        foreach (ZM\Monitor::getAnalysingOptions() as $fn => $translated) {
+          if (isset($OLANG['ANALYSING_'.strtoupper($fn)])) {
+            echo '<div class="form-text" id="'.$fn.'Help">'.$OLANG['ANALYSING_'.strtoupper($fn)]['Help'].'</div>';
+          }
+        }
+?>
+                </div>
+            </li>
+            <li id="AnalysisSource"<?php echo $monitor->SecondPath() ? '' : ' style="display:none;"' ?>>
+              <label><?php echo translate('AnalysisSource') ?></label>
+              
+<?php
+        echo htmlSelect('newMonitor[AnalysisSource]', ZM\Monitor::getAnalysisSourceOptions(), $monitor->AnalysisSource());
+?>
+            </li>
+            <li id="AnalysisImage" class="AnalysisImage">
+              <label><?php echo translate('Analysis Image') ?></label>
+              
+<?php
+        echo htmlSelect('newMonitor[AnalysisImage]', ZM\Monitor::getAnalysisImageOptions(), $monitor->AnalysisImage());
+?>
+              
+            </li>
+            <li class="AnalysisFPS">
+              <label><?php echo translate('AnalysisFPS') ?></label>
+              <input type="number" name="newMonitor[AnalysisFPSLimit]" value="<?php echo validHtmlStr($monitor->AnalysisFPSLimit()) ?>" min="0" step="any"/>
+            </li>
+<?php
+      if ( ZM_FAST_IMAGE_BLENDS ) {
+?>
+              <li class="RefBlendPerc">
+                <label><?php echo translate('RefImageBlendPct') ?></label>
+                <?php echo htmlSelect('newMonitor[RefBlendPerc]', $fastblendopts, $monitor->RefBlendPerc()); ?>
+              </li>
+              <li class="AlarmRefBlendPerc">
+                <label><?php echo translate('AlarmRefImageBlendPct') ?></label>
+                <?php echo htmlSelect('newMonitor[AlarmRefBlendPerc]', $fastblendopts_alarm, $monitor->AlarmRefBlendPerc()); ?>
+              </li>
+          <?php
+      } else {
+?>
+            <li class="RefBlendPerc">
+              <label><?php echo translate('RefImageBlendPct') ?></label>
+              <input type="number" name="newMonitor[RefBlendPerc]" value="<?php echo validHtmlStr($monitor->RefBlendPerc()) ?>" step="any" min="0"/>
+            </li>
+            <li class="AlarmRefImageBlendPct">
+              <label><?php echo translate('AlarmRefImageBlendPct') ?></label>
+              <input type="number" name="newMonitor[AlarmRefBlendPerc]" value="<?php echo validHtmlStr($monitor->AlarmRefBlendPerc()) ?>" step="any" min="0"/>
+            </li>
+<?php
+      }
+?>
+            <li class="LinkedMonitors">
+              <label><?php echo translate('LinkedMonitors'); echo makeHelpLink('OPTIONS_LINKED_MONITORS') ?></label>
+              <input type="text" name="newMonitor[LinkedMonitors]" value="<?php echo $monitor->LinkedMonitors() ?>" data-on-input="updateLinkedMonitorsUI"/><br/>
+              <div id="LinkedMonitorsUI"></div>
+            </li>
+            <li id="function_use_Amcrest_API" class="use_Amcreat_API">
+              <label><?php echo translate('use_Amcrest_API') ?></label>
+              <?php echo html_radio('newMonitor[use_Amcrest_API]', array('1'=>translate('Enabled'), '0'=>translate('Disabled')), $monitor->use_Amcrest_API()); ?>
+            </li>
+<?php
+    }
+    break;
+  case 'recording' :
+    {
+?>
+          <li class="Recording">
+            <label><?php echo translate('Recording') ?></label>
+            
+<?php
+      echo htmlSelect('newMonitor[Recording]', ZM\Monitor::getRecordingOptions(),
+        $monitor->Recording(),
+        array('data-on-change-this'=>'Recording_onChange'));
+?>
+            <div id="Recording_help">
+  <?php
+          foreach (ZM\Monitor::getRecordingOptions() as $fn => $translated) {
+            if (isset($OLANG['RECORDING_'.strtoupper($fn)])) {
+              echo '<div class="form-text" id="'.$fn.'Help">'.$OLANG['RECORDING_'.strtoupper($fn)]['Help'].'</div>';
+            }
+          }
+  ?>
+            </div>
+          </li>
+          <li id="RecordingSource"<?php echo $monitor->SecondPath() ? '' : ' style="display:none;"' ?>>
+            <label><?php echo translate('RecordingSource') ?></label>
+<?php
+        echo htmlSelect('newMonitor[RecordingSource]', ZM\Monitor::getRecordingSourceOptions(), $monitor->RecordingSource());
+?>
+          </li>
+<?php
+      $storage_areas = array(0=>translate('Unspecified'));
+      foreach ( ZM\Storage::find(array('Enabled'=>true), array('order'=>'lower(Name)')) as $Storage ) {
         $storage_areas[$Storage->Id()] = $Storage->Name();
       }
-      echo htmlSelect('newMonitor[StorageId]', $storage_areas, $monitor->StorageId());
+       if (count($storage_areas) > 1) {
+         echo '<li class="StorageArea"><label>'.translate('StorageArea').'</label>'.PHP_EOL;
+         echo htmlSelect('newMonitor[StorageId]', $storage_areas, $monitor->StorageId());
+         echo PHP_EOL.'</li>'.PHP_EOL;
+       }
 ?>
-            </td>
-          </tr>
-          <tr>
-            <td><?php echo translate('SaveJPEGs') ?></td>
-            <td>
+          <li class="SaveJPEGs">
+            <label><?php echo translate('SaveJPEGs') ?></label>
+            
 <?php
       $savejpegopts = array(
-        0 => 'Disabled',
-        1 => 'Frames only',
-        2 => 'Analysis images only (if available)',
-        3 => 'Frames + Analysis images (if available)',
+        0 => translate('Disabled'),
+        1 => translate('Frames only'),
+        2 => translate('Analysis images only (if available)'),
+        3 => translate('Frames + Analysis images (if available)'),
       );
       echo htmlSelect('newMonitor[SaveJPEGs]', $savejpegopts, $monitor->SaveJPEGs());
 ?>
-             </td>
-            </tr>
-            <tr><td><?php echo translate('VideoWriter') ?></td><td>
+             
+            </li>
+            <li class="VideoWriter">
+              <label><?php echo translate('VideoWriter') ?></label>
 <?php
 	$videowriteropts = array(
-			0 => 'Disabled',
+			0 => translate('Disabled'),
 			);
 
-  $videowriteropts[1] = 'X264 Encode';
+  $videowriteropts[1] = translate('Encode');
 
   if ( $monitor->Type() == 'Ffmpeg' )
-    $videowriteropts[2] = 'H264 Camera Passthrough';
+    $videowriteropts[2] = translate('Camera Passthrough');
   else
-    $videowriteropts[2] = array('text'=>'H264 Camera Passthrough - only for FFMPEG','disabled'=>1);
-
-  echo htmlselect('newMonitor[VideoWriter]', $videowriteropts, $monitor->VideoWriter());
+    $videowriteropts[2] = array('text'=>translate('Camera Passthrough - only for FFMPEG'),'disabled'=>1);
+	echo htmlSelect('newMonitor[VideoWriter]', $videowriteropts, $monitor->VideoWriter());
 ?>
-            </td></tr>
-            <tr>
-              <td><?php echo translate('OptionalEncoderParam') ?>&nbsp;(<?php echo makePopupLink('?view=optionhelp&amp;option=OPTIONS_ENCODER_PARAMETERS', 'zmOptionHelp', 'optionhelp', '?' ) ?>)</td>
-              <td>
-              <textarea name="newMonitor[EncoderParameters]" rows="<?php echo count(explode("\n", $monitor->EncoderParameters())); ?>"><?php echo validHtmlStr($monitor->EncoderParameters()) ?></textarea>
-              </td>
-            </tr>
-            <tr><td><?php echo translate('RecordAudio') ?></td><td>
+            </li>
+            <li class="OutputCodec">
+              <label><?php echo translate('OutputCodec') ?></label>
+<?php
+$videowriter_codecs = array(
+  'auto' => translate('Auto'),
+  'h264' => 'h264',
+  'hevc' => 'h265/hevc',
+  'vp9' => 'vp9',
+  'av1' => 'av1',
+);
+echo htmlSelect('newMonitor[OutputCodecName]', $videowriter_codecs, $monitor->OutputCodecName());
+?>
+            </li>
+            <li class="Encoder">
+              <label><?php echo translate('Encoder') ?></label>
+              
+<?php
+$videowriter_encoders = array(
+  'auto' => translate('Auto'),
+  'libx264' => 'libx264',
+  'h264' => 'h264',
+  'h264_nvenc' => 'h264_nvenc',
+  'h264_omx' => 'h264_omx',
+  'h264_qsv' => 'h264_qsv',
+  'h264_vaapi' => 'h264_vaapi',
+  'h264_v4l2m2m' => 'h264_v4l2m2m',
+  'libx265' => 'libx265',
+  'hevc_nvenc' => 'hevc_nvenc',
+  'hevc_qsv' => 'hevc_qsv',
+  'hevc_vaapi' => 'hevc_vaapi',
+  'libvpx-vp9' => 'libvpx-vp9',
+  'vp9-qsv' => 'vp9-qsv',
+  'libsvtav1' => 'libsvtav1',
+  'libaom-av1'  => 'libaom-av1',
+  'av1_qsv' => 'av1_qsv',
+  'av1_vaapi' => 'av1_vaapi',
+  'av1_nvenc' => 'av1_nvenc'
+);
+echo htmlSelect('newMonitor[Encoder]', $videowriter_encoders, $monitor->Encoder(), ['id'=>'ZmEncoder']);
+?>
+            </li>
+            <li class="EncoderTemplate" id="EncoderTemplateRow">
+              <label><?php echo translate('EncoderTemplate') ?></label>
+              <select id="EncoderTemplate" name="newMonitor[__template_picker]"></select>
+              <button type="button" id="ApplyEncoderTemplate"><?php echo translate('ApplyEncoderTemplate') ?></button>
+            </li>
+            <li class="EncoderParameters">
+              <label><?php echo translate('OptionalEncoderParam'); echo makeHelpLink('OPTIONS_ENCODER_PARAMETERS') ?></label>
+              <textarea id="EncoderParameters" name="newMonitor[EncoderParameters]" rows="<?php echo count(explode("\n", $monitor->EncoderParameters())); ?>"><?php echo validHtmlStr($monitor->EncoderParameters()) ?></textarea>
+              <div id="EncoderParameterDiagnostics" class="encoderParameterDiagnostics"></div>
+            </li>
+            <li class="EncoderHWAccelName">
+              <label>
+                <?php echo translate('EncoderHWAccelName'); echo makeHelpLink('OPTIONS_ENCODERHWACCELNAME') ?>
+              </label>
+              <input type="text" name="newMonitor[EncoderHWAccelName]" value="<?php echo validHtmlStr($monitor->EncoderHWAccelName()) ?>"/>
+            <li>
+            <li class="EncoderHWAccelDevice">
+              <label><?php echo translate('EncoderHWAccelDevice') ?>
+                  <?php echo makeHelpLink('OPTIONS_ENCODERHWACCELDEVICE') ?>
+              </label>
+              <input type="text" name="newMonitor[EncoderHWAccelDevice]" value="<?php echo validHtmlStr($monitor->EncoderHWAccelDevice()) ?>"/>
+            <li>
+            <li class="OutputContainer">
+              <label><?php echo translate('OutputContainer') ?></label>
+<?php
+$videowriter_containers = array(
+  '' => translate('Auto'),
+  'mp4' => 'mp4',
+  'mkv' => 'mkv',
+  'webm' => 'webm',
+);
+echo htmlSelect('newMonitor[OutputContainer]', $videowriter_containers, $monitor->OutputContainer());
+?>
+            </li>
+            <li class="WallClockTimeStamps">
+              <label><?php echo translate('Use Wallclock Timestamps') ?></label>
+              <input type="checkbox" name="newMonitor[WallClockTimestamps]" value="1"<?php if ( $monitor->WallClockTimestamps() ) { ?> checked="checked"<?php } ?>/>
+            </li>
+            <li class="RecordAudio">
+              <label><?php echo translate('RecordAudio') ?></label>
 <?php if ( $monitor->Type() == 'Ffmpeg' ) { ?>
               <input type="checkbox" name="newMonitor[RecordAudio]" value="1"<?php if ( $monitor->RecordAudio() ) { ?> checked="checked"<?php } ?>/>
 <?php } else { ?>
-              Audio recording only available with FFMPEG using H264 Passthrough
+              <?php echo translate('Audio recording only available with FFMPEG')?>
               <input type="hidden" name="newMonitor[RecordAudio]" value="<?php echo $monitor->RecordAudio() ? 1 : 0 ?>"/>
 <?php } ?>
-            </td></tr>
-
+            </li>
+            <li class="EventStartCommand">
+              <label><?php echo translate('Event Start Command') ?></label>
+              <input type="text" name="newMonitor[EventStartCommand]" value="<?php echo validHtmlStr($monitor->EventStartCommand()) ?>" />
+            </li>
+            <li class="EventEndCommand">
+              <label><?php echo translate('Event End Command') ?></label>
+              <input type="text" name="newMonitor[EventEndCommand]" value="<?php echo validHtmlStr($monitor->EventEndCommand()) ?>" />
+            <li>
 <?php
       break;
+    }
+  case 'viewing' :
+?>
+            <li id="WhatDisplay" class="WhatDisplay">
+              <label><?php echo translate('Show'); echo makeHelpLink('OPTIONS_WHATTODISPLAY') ?> </label>
+              <?php if (defined('AUDIO_MOTION_ENABLED') && AUDIO_MOTION_ENABLED)
+                      echo htmlSelect('newMonitor[WhatDisplay]', $whatDisplay, $monitor->WhatDisplay());
+                    else
+                      echo '<span class="text-info">' . translate('RequiresAudioMotionEnabled') . '</span>';
+                    echo '<div id="WhatDisplayInfo" class="form-text"></div>';
+              ?>
+            </li>
+            <li class="RTSPServer">
+              <label><?php echo translate('RTSPServer'); echo makeHelpLink('OPTIONS_RTSPSERVER') ?></label>
+              <input type="checkbox" name="newMonitor[RTSPServer]" value="1"<?php echo $monitor->RTSPServer() ? ' checked="checked"' : '' ?>/>
+            </li>
+            <li class="RTSPStreamName">
+              <label><?php echo translate('RTSPStreamName'); echo makeHelpLink('OPTIONS_RTSPSTREAMNAME') ?></label>
+              <input type="text" name="newMonitor[RTSPStreamName]" value="<?php echo validHtmlStr($monitor->RTSPStreamName()) ?>"/>
+            </li>
+            <li id="FunctionGo2RTCEnabled">
+              <label><?php echo translate('Go2RTC Live Stream') ?></label>
+              <input type="checkbox" name="newMonitor[Go2RTCEnabled]" value="1"<?php echo $monitor->Go2RTCEnabled() ? ' checked="checked"' : '' ?> on_click="update_players"/>
+<?php
+  if ( isset($OLANG['FUNCTION_GO2RTC_ENABLED']) ) {
+    echo '<div class="form-text">'.$OLANG['FUNCTION_GO2RTC_ENABLED']['Help'].'</div>';
+  }
+?>
+            </li>
+            <li id="FunctionRTSP2WebEnabled">
+              <label><?php echo translate('RTSP2Web Live Stream') ?></label>
+              <input type="checkbox" name="newMonitor[RTSP2WebEnabled]" value="1"<?php echo $monitor->RTSP2WebEnabled() ? ' checked="checked"' : '' ?> on_click="update_players"/>
+<?php
+  if ( isset($OLANG['FUNCTION_RTSP2WEB_ENABLED']) ) {
+    echo '<div class="form-text">'.$OLANG['FUNCTION_RTSP2WEB_ENABLED']['Help'].'</div>';
+  }
+?>
+            </li>
+            <li id="StreamChannel">
+              <label><?php echo translate('Stream source') ?> </label>
+              <?php echo htmlSelect('newMonitor[StreamChannel]', ZM\Monitor::getStreamChannelOptions(), $monitor->StreamChannel()); ?>
+            </li>
+            <li id="FunctionJanusEnabled">
+              <label><?php echo translate('Janus Live Stream') ?></label>
+              <input type="checkbox" name="newMonitor[JanusEnabled]" value="1"<?php echo $monitor->JanusEnabled() ? ' checked="checked"' : '' ?> on_click="update_players"/>
+<?php
+  if ( isset($OLANG['FUNCTION_JANUS_ENABLED']) ) {
+    echo '<div class="form-text">'.$OLANG['FUNCTION_JANUS_ENABLED']['Help'].'</div>';
+  }
+?>
+            </li>
+            <li id="FunctionJanusAudioEnabled">
+              <label><?php echo translate('Janus Live Stream Audio') ?></label>
+              <input type="checkbox" name="newMonitor[JanusAudioEnabled]" value="1"<?php echo $monitor->JanusAudioEnabled() ? ' checked="checked"' : '' ?>/>
+<?php
+  if ( isset($OLANG['FUNCTION_JANUS_AUDIO_ENABLED']) ) {
+    echo '<div class="form-text">'.$OLANG['FUNCTION_JANUS_AUDIO_ENABLED']['Help'].'</div>';
+  }
+?>
+            </li>
+            <li id="FunctionJanusProfileOverride">
+              <label><?php echo translate('Janus Profile-ID Override') ?></label>
+              <input type="text" name="newMonitor[Janus_Profile_Override]" value="<?php echo $monitor->Janus_Profile_Override()?>"/>
+<?php
+  if ( isset($OLANG['FUNCTION_JANUS_PROFILE_OVERRIDE']) ) {
+    echo '<div class="form-text">'.$OLANG['FUNCTION_JANUS_PROFILE_OVERRIDE']['Help'].'</div>';
+  }
+?>
+            </li>
+            <li id="FunctionJanusRTSPSessionTimeout">
+              <label><?php echo translate('Janus RTSP Session Timeout Override') ?></label>
+              <input type="text" name="newMonitor[Janus_RTSP_Session_Timeout]" value="<?php echo $monitor->Janus_RTSP_Session_Timeout()?>"/>
+<?php
+  if ( isset($OLANG['FUNCTION_JANUS_RTSP_SESSION_TIMEOUT']) ) {
+    echo '<div class="form-text">'.$OLANG['FUNCTION_JANUS_RTSP_SESSION_TIMEOUT']['Help'].'</div>';
+  }
+?>
+            </li>
+            <li id="FunctionRestream">
+              <label><?php echo translate('Use RTSP Restream') ?></label>
+              <input type="checkbox" name="newMonitor[Restream]" value="1"<?php echo $monitor->Restream() ? ' checked="checked"' : '' ?>/>
+<?php
+  if ( isset($OLANG['FUNCTION_RESTREAM']) ) {
+    echo '<div class="form-text">'.$OLANG['FUNCTION_RESTREAM']['Help'].'</div>';
+  }
+?>
+
+            </li>
+            <li id="RTSP_User" <?php echo (!ZM_OPT_USE_AUTH or !$monitor->Restream()) ? 'style="display:none;"' : ''?>>
+              <label><?php echo translate('User for RTSP Server Auth') ?></label>
+              <?php
+                $users = array(''=>translate('None'));
+                foreach (ZM\User::find() as $u) {
+                  if (!$monitor->Id() or !$monitor->canView($u))
+                    continue;
+                  $users[$u->Id()] = $u->Username();
+                }
+                echo htmlSelect("newMonitor[RTSP_User]", $users, $monitor->RTSP_User());
+?>
+              
+            </li>
+            <li id="DefaultPlayer">
+              <label><?php echo translate('Default Player') ?></label>
+<?php 
+  $players = [
+    ''=>translate('Auto'),
+    'zms'=>'ZMS MJPEG',
+    'go2rtc' => 'Go2RTC Auto',
+    'go2rtc_webrtc' => 'Go2RTC WEBRTC',
+    'go2rtc_mse' => 'Go2RTC MSE',
+    'go2rtc_hls' => 'Go2RTC HLS',
+    'rtsp2web_webrtc' => 'RTSP2Web WEBRTC',
+    'rtsp2web_mse' => 'RTSP2Web MSE',
+    'rtsp2web_hls' => 'RTSP2Web HLS',
+    'janus' => 'Janus'
+  ];
+
+echo htmlSelect('newMonitor[DefaultPlayer]', $players, $monitor->DefaultPlayer()); ?>
+            </li>
+            <li>
+              <label><?php echo translate('DefaultRate') ?></label>
+              <?php echo htmlSelect('newMonitor[DefaultRate]', $rates, $monitor->DefaultRate()); ?>
+            </li>
+            <li>
+              <label><?php echo translate('DefaultScale') ?></label>
+              <?php echo htmlSelect('newMonitor[DefaultScale]', $scales, $monitor->DefaultScale()); ?>
+            </li>
+            <li>
+              <label><?php echo translate('DefaultCodec') ?></label>
+              <?php
+$codecs = array(
+  'auto'  => translate('Auto'),
+  'MP4'   => translate('MP4'),
+  'MJPEG' => translate('MJPEG'),
+);
+ echo htmlSelect('newMonitor[DefaultCodec]', $codecs, $monitor->DefaultCodec()); ?>
+            </li>
+            <li>
+<?php
+  $stream_available = canView('Stream') and $monitor->Type()=='WebSite' or ($monitor->CaptureFPS() && $monitor->Capturing() != 'None');
+  $options = array();
+
+  $ratio_factor = $monitor->ViewWidth() ? $monitor->ViewHeight() / $monitor->ViewWidth() : 1;
+  $options['width'] = ZM_WEB_LIST_THUMB_WIDTH;
+  $options['height'] = ZM_WEB_LIST_THUMB_HEIGHT ? ZM_WEB_LIST_THUMB_HEIGHT : ZM_WEB_LIST_THUMB_WIDTH*$ratio_factor;
+  $options['scale'] = $monitor->ViewWidth() ? intval(100*ZM_WEB_LIST_THUMB_WIDTH / $monitor->ViewWidth()) : 100;
+  $options['mode'] = 'jpeg';
+  $options['frames'] = 1;
+
+  $stillSrc = $monitor->getStreamSrc($options);
+  $streamSrc = $monitor->getStreamSrc(array('scale'=>$options['scale']*5));
+
+  $thmbWidth = ( $options['width'] ) ? 'width:'.$options['width'].'px;' : '';
+  $thmbHeight = ( $options['height'] ) ? 'height:'.$options['height'].'px;' : '';
+
+  $imgHTML = '<div class="colThumbnail" style="'.$thmbHeight.'"><a';
+  $imgHTML .= $stream_available ? ' href="?view=watch&amp;mid='.$monitor->Id().'">' : '>';
+  $imgHTML .= '<img id="thumbnail' .$monitor->Id(). '" src="' .$stillSrc. '" style="'
+    .$thmbWidth.$thmbHeight. '" stream_src="' .$streamSrc. '" still_src="' .$stillSrc. '"'.
+    ' data-monitor-width="'.$monitor->ViewWidth().'" data-monitor-height="'.$monitor->ViewHeight().'"'.
+    ($options['width'] ? ' width="'.$options['width'].'"' : '' ).
+    ($options['height'] ? ' height="'.$options['height'].'"' : '' ).
+    ' loading="lazy" /></a></div>';
+  echo $imgHTML;
+?>
+            </li>
+<?php
+    break;
   case 'timestamp' :
     {
 ?>
-            <tr>
-              <td><?php echo translate('TimestampLabelFormat') ?></td>
-              <td><input type="text" name="newMonitor[LabelFormat]" value="<?php echo validHtmlStr($monitor->LabelFormat()) ?>"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('TimestampLabelX') ?></td>
-              <td><input type="number" name="newMonitor[LabelX]" value="<?php echo validHtmlStr($monitor->LabelX()) ?>" min="0"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('TimestampLabelY') ?></td>
-              <td><input type="number" name="newMonitor[LabelY]" value="<?php echo validHtmlStr($monitor->LabelY()) ?>" min="0"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('TimestampLabelSize') ?></td>
-              <td><?php echo htmlselect('newMonitor[LabelSize]', $label_size, $monitor->LabelSize()) ?></td>
-            </tr>
+            <li>
+              <label><?php echo translate('TimestampLabelFormat') ?></label>
+              <input type="text" name="newMonitor[LabelFormat]" value="<?php echo validHtmlStr($monitor->LabelFormat()) ?>" placeholder="<?php echo translate('Python strftime format. %f for hundredths, %N for Monitor Name, %Q for show text.') ?>"/>
+            </li>
+            <li>
+              <label><?php echo translate('TimestampLabelX') ?></label>
+              <input type="number" name="newMonitor[LabelX]" value="<?php echo validHtmlStr($monitor->LabelX()) ?>" min="0"/>
+            </li>
+            <li>
+              <label><?php echo translate('TimestampLabelY') ?></label>
+              <input type="number" name="newMonitor[LabelY]" value="<?php echo validHtmlStr($monitor->LabelY()) ?>" min="0"/>
+            </li>
+            <li>
+              <label><?php echo translate('TimestampLabelSize') ?></label>
+              <?php echo htmlselect('newMonitor[LabelSize]', $label_size, $monitor->LabelSize()) ?>
+            </li>
 <?php
       break;
     }
   case 'buffers' :
     {
 ?>
-            <tr>
-              <td><?php echo translate('ImageBufferSize') ?></td>
-              <td><input type="number" name="newMonitor[ImageBufferCount]" value="<?php echo validHtmlStr($monitor->ImageBufferCount()) ?>" min="1"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('WarmupFrames') ?></td>
-              <td><input type="number" name="newMonitor[WarmupCount]" value="<?php echo validHtmlStr($monitor->WarmupCount()) ?>" min="0"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('PreEventImageBuffer') ?></td>
-              <td><input type="number" name="newMonitor[PreEventCount]" value="<?php echo validHtmlStr($monitor->PreEventCount()) ?>" min="0"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('PostEventImageBuffer') ?></td>
-              <td><input type="number" name="newMonitor[PostEventCount]" value="<?php echo validHtmlStr($monitor->PostEventCount()) ?>" min="0"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('StreamReplayBuffer') ?></td>
-              <td><input type="number" name="newMonitor[StreamReplayBuffer]" value="<?php echo validHtmlStr($monitor->StreamReplayBuffer()) ?>" min="0"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('AlarmFrameCount') ?></td>
-              <td><input type="number" name="newMonitor[AlarmFrameCount]" value="<?php echo validHtmlStr($monitor->AlarmFrameCount()) ?>" min="1"/></td>
-            </tr>
+            <li class="ImageBufferCount">
+              <label><?php echo translate('ImageBufferSize'); echo makeHelpLink('ImageBufferCount'); ?></label>
+              <input type="number" name="newMonitor[ImageBufferCount]" value="<?php echo validHtmlStr($monitor->ImageBufferCount()) ?>" min="1"/>
+            </li>
+            <li class="MaxImageBufferCount">
+              <label><?php echo translate('MaxImageBufferCount'); echo makeHelpLink('MaxImageBufferCount'); ?></label>
+              <input type="number" id="newMonitor[MaxImageBufferCount]" name="newMonitor[MaxImageBufferCount]" value="<?php echo validHtmlStr($monitor->MaxImageBufferCount()) ?>" min="0"/>
+            </li>
+            <li class="WarmupCount">
+              <label><?php echo translate('WarmupFrames') ?></label>
+              <input type="number" name="newMonitor[WarmupCount]" value="<?php echo validHtmlStr($monitor->WarmupCount()) ?>" min="0"/>
+            </li>
+            <li class="PreEventCount">
+              <label><?php echo translate('PreEventImageBuffer') ?></label>
+              <input type="number" id="newMonitor[PreEventCount]" name="newMonitor[PreEventCount]" value="<?php echo validHtmlStr($monitor->PreEventCount()) ?>" min="0"/>
+            </li>
+            <li class="PostEventCount">
+              <label><?php echo translate('PostEventImageBuffer') ?></label>
+              <input type="number" name="newMonitor[PostEventCount]" value="<?php echo validHtmlStr($monitor->PostEventCount()) ?>" min="0"/>
+            </li>
+            <li class="StreamReplayBuffer">
+              <label><?php echo translate('StreamReplayBuffer') ?></label>
+              <input type="number" name="newMonitor[StreamReplayBuffer]" value="<?php echo validHtmlStr($monitor->StreamReplayBuffer()) ?>" min="0"/>
+            </li>
+            <li class="AlarmFrameCount">
+              <label><?php echo translate('AlarmFrameCount') ?></label>
+              <input type="number" name="newMonitor[AlarmFrameCount]" value="<?php echo validHtmlStr($monitor->AlarmFrameCount()) ?>" min="1"/>
+            </li>
+            <li class="EstimatedRamUse">
+              <label><?php echo translate('Estimated Ram Use') ?></label>
+              <span id="estimated_ram_use"></span>
+            </li>
 <?php
       break;
     }
   case 'control' :
     {
 ?>
-            <tr>
-              <td><?php echo translate('Controllable') ?></td>
-              <td><input type="checkbox" name="newMonitor[Controllable]" value="1"<?php if ( $monitor->Controllable() ) { ?> checked="checked"<?php } ?>/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('ControlType') ?></td>
-              <td><?php echo htmlSelect('newMonitor[ControlId]', $controlTypes, $monitor->ControlId());
-if ( canEdit('Control') ) {
-  echo '&nbsp;'.makePopupLink('?view=controlcaps', 'zmControlCaps', 'controlcaps', translate('Edit'));
-}
-?></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('ControlDevice') ?></td>
-              <td><input type="text" name="newMonitor[ControlDevice]" value="<?php echo validHtmlStr($monitor->ControlDevice()) ?>"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('ControlAddress') ?></td>
-              <td><input type="text" name="newMonitor[ControlAddress]" value="<?php echo validHtmlStr($monitor->ControlAddress()) ?>"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('AutoStopTimeout') ?></td>
-              <td><input type="number" name="newMonitor[AutoStopTimeout]" value="<?php echo validHtmlStr($monitor->AutoStopTimeout()) ?>" min="0" step="any"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('TrackMotion') ?></td>
-              <td><input type="checkbox" name="newMonitor[TrackMotion]" value="1"<?php if ( $monitor->TrackMotion() ) { ?> checked="checked"<?php } ?>/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('TrackDelay') ?></td>
-              <td><input type="number" name="newMonitor[TrackDelay]" value="<?php echo validHtmlStr($monitor->TrackDelay()) ?>" min="0" step="any"/></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('ReturnLocation') ?></td>
-              <td><?php
+            <li>
+              <label><?php echo translate('Controllable') ?></label>
+              <input type="checkbox" name="newMonitor[Controllable]" value="1"<?php if ( $monitor->Controllable() ) { ?> checked="checked"<?php } ?>/>
+            </li>
+            <li>
+              <label><?php echo translate('ControlType') ?></label>
+<?php 
+                  $controls = ZM\Control::find(null, array('order'=>'lower(Name)'));
+                  $controlTypes = array(''=>translate('None'));
+                  foreach ( $controls as $control ) {
+                    $controlTypes[$control->Id()] = $control->Name();
+                  }
+
+                  echo htmlSelect('newMonitor[ControlId]', $controlTypes, $monitor->ControlId(), ['id'=>'ControlId', 'data-on-click-this'=>'ControlId_onChange']);
+                  if (canEdit('Control')) {
+                    if ($monitor->ControlId()) {
+                      echo '&nbsp;<button type="button" data-on-click="ControlEdit_onClick" id="ControlEdit">'.translate('Edit').'</button>';
+                    }
+                    echo '&nbsp;<button type="button" data-on-click="ControlList_onClick" id="ControlList">'.translate('List').'</button>';
+                  }
+?>
+            </li>
+            <li>
+              <label><?php echo translate('ControlDevice') ?></label>
+              <input type="text" name="newMonitor[ControlDevice]" value="<?php echo validHtmlStr($monitor->ControlDevice()) ?>"/>
+            </li>
+            <li>
+              <label><?php echo translate('ControlAddress') ?></label>
+              <input type="text" name="newMonitor[ControlAddress]" value="<?php echo validHtmlStr($monitor->ControlAddress()) ?>" placeholder="user:pass@ip"/>
+            </li>
+            <li>
+              <label><?php echo translate('ModectDuringPTZ') ?></label>
+              <input type="checkbox" name="newMonitor[ModectDuringPTZ]" value="1"<?php if ( $monitor->ModectDuringPTZ() ) { ?> checked="checked"<?php } ?>/>
+            </li>
+            <li>
+              <label><?php echo translate('AutoStopTimeout') ?></label>
+              <input type="number" name="newMonitor[AutoStopTimeout]" value="<?php echo validHtmlStr($monitor->AutoStopTimeout()) ?>" min="0" step="any"/>
+            </li>
+            <li>
+              <label><?php echo translate('TrackMotion') ?></label>
+              <input type="checkbox" name="newMonitor[TrackMotion]" value="1"<?php if ( $monitor->TrackMotion() ) { ?> checked="checked"<?php } ?>/>
+            </li>
+            <li>
+              <label><?php echo translate('TrackDelay') ?></label>
+              <input type="number" name="newMonitor[TrackDelay]" value="<?php echo validHtmlStr($monitor->TrackDelay()) ?>" min="0" step="any"/>
+            </li>
+            <li>
+              <label><?php echo translate('ReturnLocation') ?></label>
+<?php
       $return_options = array(
           '-1' => translate('None'),
           '0' => translate('Home'),
           '1' => translate('Preset').' 1',
       );
-echo htmlSelect('newMonitor[ReturnLocation]', $return_options, $monitor->ReturnLocation()); ?></td>
-            </tr>
-            <tr>
-              <td><?php echo translate('ReturnDelay') ?></td>
-              <td><input type="number" name="newMonitor[ReturnDelay]" value="<?php echo validHtmlStr($monitor->ReturnDelay()) ?>" min="0" step="any"/></td>
-            </tr>
+echo htmlSelect('newMonitor[ReturnLocation]', $return_options, $monitor->ReturnLocation()); ?>
+            </li>
+            <li>
+              <label><?php echo translate('ReturnDelay') ?></label>
+              <input type="number" name="newMonitor[ReturnDelay]" value="<?php echo validHtmlStr($monitor->ReturnDelay()) ?>" min="0" step="any"/>
+            </li>
 <?php
       break;
     }
   case 'x10' :
     {
 ?>
-            <tr><td><?php echo translate('X10ActivationString') ?></td><td><input type="text" name="newX10Monitor[Activation]" value="<?php echo validHtmlStr($newX10Monitor['Activation']) ?>" size="20"/></td></tr>
-            <tr><td><?php echo translate('X10InputAlarmString') ?></td><td><input type="text" name="newX10Monitor[AlarmInput]" value="<?php echo validHtmlStr($newX10Monitor['AlarmInput']) ?>" size="20"/></td></tr>
-            <tr><td><?php echo translate('X10OutputAlarmString') ?></td><td><input type="text" name="newX10Monitor[AlarmOutput]" value="<?php echo validHtmlStr($newX10Monitor['AlarmOutput']) ?>" size="20"/></td></tr>
+            <li>
+              <label><?php echo translate('X10ActivationString') ?></label>
+              <input type="text" name="newX10Monitor[Activation]" value="<?php echo validHtmlStr($newX10Monitor['Activation']) ?>" size="20"/>
+            </li>
+            <li>  
+              <label><?php echo translate('X10InputAlarmString') ?></label>
+              <input type="text" name="newX10Monitor[AlarmInput]" value="<?php echo validHtmlStr($newX10Monitor['AlarmInput']) ?>" size="20"/>
+            </li>
+            <li>
+              <label><?php echo translate('X10OutputAlarmString') ?></label>
+              <input type="text" name="newX10Monitor[AlarmOutput]" value="<?php echo validHtmlStr($newX10Monitor['AlarmOutput']) ?>" size="20"/>
+            </li>
 <?php
       break;
     }
   case 'misc' :
     {
 ?>
-        <tr>
-          <td><?php echo translate('EventPrefix') ?></td>
-          <td><input type="text" name="newMonitor[EventPrefix]" value="<?php echo validHtmlStr($monitor->EventPrefix()) ?>"/></td>
-        </tr>
-        <tr>
-          <td><?php echo translate('Sectionlength') ?></td>
-          <td>
+        <li>
+          <label><?php echo translate('EventPrefix') ?></label>
+          <input type="text" name="newMonitor[EventPrefix]" value="<?php echo validHtmlStr($monitor->EventPrefix()) ?>"/>
+        </li>
+        <li>
+          <label><?php echo translate('Sectionlength') ?></label>
             <input type="number" name="newMonitor[SectionLength]" value="<?php echo validHtmlStr($monitor->SectionLength()) ?>" min="0"/>
             <?php echo translate('seconds')?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('MinSectionlength') ?></td>
-          <td>
+            <input type="checkbox" name="newMonitor[SectionLengthWarn}" value="1"<?php echo $monitor->SectionLengthWarn() ? ' checked="checked"' : '' ?>/>
+            <?php echo translate('Warn if exceeded') ?>
+        </li>
+        <li>
+          <label><?php echo translate('MinSectionlength') ?></label>
             <input type="number" name="newMonitor[MinSectionLength]" value="<?php echo validHtmlStr($monitor->MinSectionLength()) ?>" min="0"/>
             <?php echo translate('seconds')?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('FrameSkip') ?></td>
-          <td>
-            <input type="number" name="newMonitor[FrameSkip]" value="<?php echo validHtmlStr($monitor->FrameSkip()) ?>" min="0"/>
-            <?php echo translate('frames')?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('MotionFrameSkip') ?></td>
-          <td>
+        </li>
+        <li class="EventCloseMode">
+          <label><?php echo translate('Event Close Mode') ?></label>
+          <?php echo html_radio('newMonitor[EventCloseMode]', ['system'=>translate('System'), 'time'=>translate('Time'), 'duration'=>translate('Duration'), 'idle'=>translate('Idle'), 'alarm'=>translate('Alarm')], $monitor->EventCloseMode()); ?>
+          <span class="form-text form-control-sm">When continuous events are closed.&nbsp;(<a id="ZM_EVENT_CLOSE_MODE" class="optionhelp">?</a>)</span>
+        </li>
+        <li>
+          <label><?php echo translate('MotionFrameSkip') ?></label>
             <input type="number" name="newMonitor[MotionFrameSkip]" value="<?php echo validHtmlStr($monitor->MotionFrameSkip()) ?>" min="0"/>
             <?php echo translate('frames')?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('AnalysisUpdateDelay') ?></td>
-          <td>
+        </li>
+        <li>
+          <label><?php echo translate('AnalysisUpdateDelay') ?></label>
             <input type="number" name="newMonitor[AnalysisUpdateDelay]" value="<?php echo validHtmlStr($monitor->AnalysisUpdateDelay()) ?>" min="0"/>
             <?php echo translate('seconds')?>
-          </td></tr>
-        <tr>
-          <td><?php echo translate('FPSReportInterval') ?></td>
-          <td>
+        </li>
+        <li>
+          <label><?php echo translate('FPSReportInterval') ?></label>
             <input type="number" name="newMonitor[FPSReportInterval]" value="<?php echo validHtmlStr($monitor->FPSReportInterval()) ?>" min="0"/>
             <?php echo translate('frames')?>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('DefaultRate') ?></td>
-          <td><?php echo htmlSelect('newMonitor[DefaultRate]', $rates, $monitor->DefaultRate()); ?></td>
-        </tr>
-        <tr>
-          <td><?php echo translate('DefaultScale') ?></td>
-          <td><?php echo htmlSelect('newMonitor[DefaultScale]', $scales, $monitor->DefaultScale()); ?></td>
-        </tr>
-        <tr>
-          <td><?php echo translate('DefaultCodec') ?></td>
-          <td><?php echo htmlSelect('newMonitor[DefaultCodec]', $codecs, $monitor->DefaultCodec()); ?></td>
-        </tr>
-        <tr>
-          <td><?php echo translate('SignalCheckPoints') ?></td>
-          <td>
+        </li>
+        <li>
+          <label><?php echo translate('SignalCheckPoints') ?></label>
             <input type="number" name="newMonitor[SignalCheckPoints]" value="<?php echo validInt($monitor->SignalCheckPoints()) ?>" min="0"/>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('SignalCheckColour') ?></td>
-          <td>
+        </li>
+        <li>
+          <label><?php echo translate('SignalCheckColour') ?></label>
             <input type="color" name="newMonitor[SignalCheckColour]" value="<?php echo validHtmlStr($monitor->SignalCheckColour()) ?>"/>
             <span id="SignalCheckSwatch" class="swatch" style="background-color: <?php echo validHtmlStr($monitor->SignalCheckColour()); ?>;">&nbsp;&nbsp;&nbsp;&nbsp;</span>
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('WebColour') ?></td>
-          <td>
+        </li>
+        <li>
+          <label><?php echo translate('WebColour') ?></label>
             <input type="color" name="newMonitor[WebColour]" value="<?php echo validHtmlStr($monitor->WebColour()) ?>"/>
             <span id="WebSwatch" class="swatch" style="background-color: <?php echo validHtmlStr($monitor->WebColour()) ?>;">&nbsp;&nbsp;&nbsp;&nbsp;</span>
             <i class="material-icons" data-on-click="random_WebColour">sync</i>
 
-          </td>
-        </tr>
-        <tr>
-          <td><?php echo translate('Exif') ?>&nbsp;(<?php echo makePopupLink( '?view=optionhelp&amp;option=OPTIONS_EXIF', 'zmOptionHelp', 'optionhelp', '?' ) ?>)</td>
-          <td><input type="checkbox" name="newMonitor[Exif]" value="1"<?php if ( $monitor->Exif() ) { ?> checked="checked"<?php } ?>/></td>
-        </tr>
+        </li>
+        <li>
+          <label class="Exif"><?php echo translate('Exif'); echo makeHelpLink('OPTIONS_EXIF') ?></label>
+          <input type="checkbox" name="newMonitor[Exif]" value="1"<?php echo $monitor->Exif() ? ' checked="checked"' : '' ?>/>
+        </li>
+        <li>
+          <label class="Importance"><?php echo translate('Importance'); echo makeHelpLink('OPTIONS_IMPORTANCE') ?></label>
+<?php
+      echo htmlselect('newMonitor[Importance]',
+              array(
+                'Normal'=>translate('Normal'),
+                'Less'=>translate('Less important'),
+                'Not'=>translate('Not important')
+              ), $monitor->Importance());
+?>
+        </li>
+        <li class="StartupDelay">
+          <label><?php echo translate('Startup Delay'); ?></label>
+          <input type="number" min="0" max="65536" step="1" name="newMonitor[StartupDelay]" value="<?php echo validCardinal($monitor->StartupDelay()) ?>"/><?php echo translate('seconds') ?>
+        </li>
 <?php
         break;
     }
+  case 'location':
+?>
+        <li class="Latitude">
+          <label class="Latitude"><?php echo translate('Latitude') ?></label>
+          <input type="number" id="newMonitor[Latitude]" name="newMonitor[Latitude]" step="any" value="<?php echo $monitor->Latitude() ?>" min="-90" max="90" data-on-input-this="ll2dms" placeholder="degrees"/>
+          <input type="text" id="LatitudeDMS" data-on-input-this="dms2ll" placeholder="Degrees Minutes Seconds" />
+        </li>
+        <li class="Longitude">
+          <label class="Longitude"><?php echo translate('Longitude') ?></label>
+          <input type="number" id="newMonitor[Longitude]" name="newMonitor[Longitude]" step="any" value="<?php echo $monitor->Longitude() ?>" min="-180" max="180" data-on-input-this="ll2dms" placeholder="degrees"/>
+          <input type="text" id="LongitudeDMS" data-on-input-this="dms2ll" placeholder="Degrees Minutes Seconds"/>
+        </li>
+        <li class="DMS">
+        </li>
+        <li>
+          <button type="button" data-on-click="getLocation"><?php echo translate('GetCurrentLocation') ?></button>
+        </li>
+        <li>
+          <div id="LocationMap" style="height: 500px; width: 500px;"></div>
+        </li>
+<?php
+    break;
+  case 'mqtt':
+?>
+        <li>
+          <label class="MQTT_Enabled"><?php echo translate('MQTT Enabled') ?></label>
+          <?php echo html_radio('newMonitor[MQTT_Enabled]', array('1'=>translate('Enabled'), '0'=>translate('Disabled')), $monitor->MQTT_Enabled()) ?>
+        </li>
+        <li>
+          <label class="MQTT_Subscriptions"><?php echo translate('MQTT Subscriptions') ?></label>
+          <input type="text" name="newMonitor[MQTT_Subscriptions]" value="<?php echo $monitor->MQTT_Subscriptions() ?>" />
+        </li>
+<?php
+    break;
+  case 'zones':
+    break;
+  default :
+    ZM\Error("Unknown tab \"$name\"");
 } // end switch tab
 ?>
-          </tbody>
-        </table>
-        <div id="contentButtons">
-          <button type="submit" value="Save"<?php echo canEdit('Monitors') ? '' : ' disabled="disabled"' ?>><?php echo translate('Save') ?></button>
-          <button type="button" data-on-click="closeWindow"><?php echo translate('Cancel') ?></button>
+  </ul>
+</div>
+<?php 
+} # end foreach tab
+?>
+</div><!--tab-content-->
+        <div id="contentButtons" class="pr-3">
+          <button type="button" id="saveBtn" name="action" value="save"<?php echo canEdit('Monitors', $mid) ? ($thisNewMonitor === true ? ' disabled="disabled"' : '') : ' disabled="disabled"' ?>><?php echo translate('Save') ?></button>
+          <button type="button" id="saveAndCloseBtn" name="action" value="save"<?php echo canEdit('Monitors', $mid) ? '' : ' disabled="disabled"' ?>><?php echo translate('SaveAndClose') ?></button>
+          <button type="button" id="cancelBtn"><?php echo translate('Cancel') ?></button>
         </div>
       </form>
-    </div>
-    </div>
-  </body>
-</html>
+    </div><!--monitor-->
+</div><!-- flex column container-->
+    </div><!--content-->
+  </div><!--page-->
+  <div id="alertSaveMonitorData" class="fixed-t-r alert alert-info" role="alert" style="display: none;">
+    <h2 class="alert-heading"><?php echo translate('PleaseWait') ?></h2>
+    <?php echo translate('MonitorDataIsSaved') ?>
+  </div>
+
+  <script src="<?php echo cache_bust('js/MonitorLinkExpression.js') ?>"></script>
+  <script src="<?php echo cache_bust('skins/classic/views/js/monitor-encoder-templates.js') ?>"></script>
+<script type="module" nonce="<?php echo $cspNonce ?>">
+  import DmsCoordinates, {parseDms} from "./js/dms.js";
+  window.DmsCoordinates = DmsCoordinates;
+  window.parseDms = parseDms;
+</script>
+<?php
+echo output_script_if_exists(array('js/leaflet/leaflet.js'), false);
+echo output_link_if_exists(array('js/leaflet/leaflet.css'), false);
+xhtmlFooter()
+?>

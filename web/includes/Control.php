@@ -98,6 +98,8 @@ class Control extends ZM_Object {
     'HasWhiteSpeed' => 0, 
     'MinWhiteSpeed' => NULL,
     'MaxWhiteSpeed' => NULL,
+    'CanLight' => 0,
+    'CanIndicatorLight' => 0,
     'HasPresets' => 0,
     'NumPresets' => 0,
     'HasHomePreset' => 0,
@@ -108,11 +110,11 @@ class Control extends ZM_Object {
     );
 
   public static function find( $parameters = array(), $options = array() ) {
-    return ZM_Object::_find(get_class(), $parameters, $options);
+    return ZM_Object::_find(self::class, $parameters, $options);
   }
 
   public static function find_one( $parameters = array(), $options = array() ) {
-    return ZM_Object::_find_one(get_class(), $parameters, $options);
+    return ZM_Object::_find_one(self::class, $parameters, $options);
   }
 
   public function commands() {
@@ -122,6 +124,10 @@ class Control extends ZM_Object {
     $cmds['Sleep'] = 'sleep';
     $cmds['Reset'] = 'reset';
     $cmds['Reboot'] = 'reboot';
+    $cmds['LightOn']  = 'lightOn';
+    $cmds['LightOff'] = 'lightOff';
+    $cmds['IndicatorLightOn']  = 'indicatorLightOn';
+    $cmds['IndicatorLightOff'] = 'indicatorLightOff';
 
     $cmds['PresetSet'] = 'presetSet';
     $cmds['PresetGoto'] = 'presetGoto';

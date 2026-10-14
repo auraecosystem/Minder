@@ -1,179 +1,652 @@
-function closeWindows() {
-  window.close();
-  // This is a hack. The only way to close an existing window is to try and open it!
-  var filterWindow = window.open( thisUrl+'?view=none', 'zmFilter', 'width=1,height=1' );
-  filterWindow.close();
+"use strict";
+const backButton = $j('#backBtn');
+const viewButton = $j('#viewBtn');
+const archiveButton = $j('#archiveBtn');
+const unarchiveButton = $j('#unarchiveBtn');
+const editButton = $j('#editBtn');
+const exportButton = $j('#exportBtn');
+const downloadButton = $j('#downloadBtn');
+const deleteButton = $j('#deleteBtn');
+const table = $j('#eventTable');
+var ajax = null;
+var footerData = {DiskSpace: '', Length: 0};
+
+/*
+This is the format of the json object sent by bootstrap-table
+
+var params =
+{
+"type":"get",
+"data":
+  {
+  "search":"some search text",
+  "sort":"StartDateTime",
+  "order":"asc",
+  "offset":0,
+  "limit":25
+  "filter":
+    {
+    "Name":"some advanced search text"
+    "StartDateTime":"some more advanced search text"
+    }
+  },
+"cache":true,
+"contentType":"application/json",
+"dataType":"json"
+};
+*/
+
+// Called by bootstrap-table to retrieve zm event data
+function ajaxRequest(params) {
+  if (deferTableRequestWhileHidden(table)) return;
+  if (params.data && params.data.filter) {
+    params.data.advsearch = params.data.filter;
+    delete params.data.filter;
+  }
+  $j('#fieldsTable input, #fieldsTable select').each(function(index) {
+    const el = $j(this);
+    params.data[el.attr('name')] = el.val();
+  });
+  if (ajax) ajax.abort();
+  ajax = $j.ajax({
+    method: 'POST',
+    url: thisUrl + '?view=request&request=events&task=query'+filterQuery,
+    data: params.data,
+    timeout: 0,
+    success: function(data) {
+      if (data.result == 'Error') {
+        // ajaxError() answers 200 with result=Error for things like a
+        // permission failure, so this returns without params.success() and
+        // would leave the table loading for ever, same as the error path below.
+        table.bootstrapTable('hideLoading');
+        alert(data.message);
+        return;
+      }
+      var rows = processRows(data.rows);
+      // Store footer totals data
+      if (data.footerData) {
+        footerData = data.footerData;
+      }
+      // rearrange the result into what bootstrap-table expects
+      params.success({total: data.total, totalNotFiltered: data.totalNotFiltered, rows: rows});
+    },
+    error: function(jqXHR, textStatus, errorThrown) {
+      // Every reload aborts the request in flight, so those are not failures.
+      if (jqXHR.statusText == 'abort') return;
+      // Without this the table sits on "Loading, please wait" for good, which
+      // is what a large result set exhausting the PHP memory limit looks like
+      // from here: the request 500s and nothing ever says so. logAjaxFail only
+      // writes to the console, and events.php suppresses display_errors, so a
+      // memory fatal arrives with an empty body and not even that says
+      // anything useful. Hence the alert as well. See #3301.
+      table.bootstrapTable('hideLoading');
+      zmAlert(translate['Reason'] + ': ' + jqXHR.statusText + '~~' +
+        translate['ErrorUpdatingEventTable'], translate['AJAXRequestError']);
+      logAjaxFail(jqXHR, textStatus, errorThrown);
+    }
+  });
 }
 
-function setButtonStates( element ) {
-  var form = element.form;
-  var checked = element.checked;
-  form.viewBtn.disabled = !(canViewEvents && checked);
-  form.editBtn.disabled = !(canEditEvents && checked);
-  form.archiveBtn.disabled = unarchivedEvents?!checked:true;
-  form.unarchiveBtn.disabled = !(canEditEvents && archivedEvents && checked);
-  form.downloadBtn.disabled = !(canViewEvents && checked);
-  form.exportBtn.disabled = !(canViewEvents && checked);
-  form.deleteBtn.disabled = !(canEditEvents && checked);
-}
+function processRows(rows) {
+  $j.each(rows, function(ndx, row) {
+    var eid = row.Id;
+    var archived = row.Archived == yesString ? archivedString : '';
+    var emailed = row.Emailed == yesString ? emailedString : '';
 
-function configureButton(event) {
-  var element = event.target;
-  var form = element.form;
-  var checked = element.checked;
-  if ( !checked ) {
-    for (var i = 0, len=form.elements.length; i < len; i++) {
-      if ( form.elements[i].name.indexOf('eids') == 0) {
-        if ( form.elements[i].checked ) {
-          checked = true;
-          break;
+    row.Id = '<a href="?view=event&amp;eid=' + eid + filterQuery + sortQuery + '&amp;page=1">' + eid + '</a>';
+    row.Name = '<a href="?view=event&amp;eid=' + eid + filterQuery + sortQuery + '&amp;page=1">' + row.Name + '</a>' +
+        '<br/><div class="small text-muted">' + archived + emailed + '</div>';
+    if ( canEdit.Monitors ) row.Monitor = '<a href="?view=event&amp;eid=' + eid + '">' + row.Monitor + '</a>';
+    if ( canEdit.Events ) row.Cause = '<a href="#" title="' + row.Notes + '" class="eDetailLink" data-eid="' + eid + '">' + row.Cause + '</a>';
+    if ( row.Notes.indexOf('detected:') >= 0 ) {
+      row.Cause = row.Cause + '<a href="#" class="objDetectLink" data-eid=' +eid+ '><div class="small text-muted"><u>' + row.Notes + '</u></div></div></a>';
+    } else if ( row.Notes != 'Forced Web: ' ) {
+      row.Cause = row.Cause + '<br/><div class="small text-muted">' + row.Notes + '</div>';
+    }
+    row.Frames = '<a href="?view=frames&amp;eid=' + eid + '">' + row.Frames + '</a>';
+    row.AlarmFrames = '<a href="?view=frames&amp;eid=' + eid + '">' + row.AlarmFrames + '</a>';
+    row.MaxScore = '<a href="?view=frame&amp;eid=' + eid + '&amp;fid=0">' + row.MaxScore + '</a>';
+    row.Location = row.Latitude+', '+row.Longitude;
+    row.DiskSpace = '<a href="?view=event&amp;eid=' + eid + filterQuery + sortQuery + '&amp;page=1">' + row.DiskSpace + '</a>';
+    row.Storage = '<a href="?view=event&amp;eid=' + eid + filterQuery + sortQuery + '&amp;page=1">' + row.Storage + '</a>';
+
+    const date = new Date(0); // Have to init it fresh.  setSeconds seems to add time, not set it.
+    date.setSeconds(row.Length);
+    row.Length = date.toISOString().substr(11, 8);
+    if (ZM_DATETIME_FORMAT_PATTERN) {
+      if (window.DateTime) {
+        row.StartDateTime = DateTime.fromSQL(row.StartDateTime)
+        //.setZone(ZM_TIMEZONE)
+            .toFormat(ZM_DATETIME_FORMAT_PATTERN);
+        if (row.EndDateTime) {
+          row.EndDateTime = DateTime.fromSQL(row.EndDateTime)
+          //.setZone(ZM_TIMEZONE)
+              .toFormat(ZM_DATETIME_FORMAT_PATTERN);
         }
+      } else {
+        console.log("DateTime is not defined");
       }
+    } else {
+      console.log("No ZM_DATETIME_FORMAT_PATTERN");
     }
-  }
-  if ( !element.checked ) {
-    form.toggleCheck.checked = false;
-  }
-  form.viewBtn.disabled = !(canViewEvents && checked);
-  form.editBtn.disabled = !(canEditEvents && checked);
-  form.archiveBtn.disabled = (!checked)||(!unarchivedEvents);
-  form.unarchiveBtn.disabled = !(canEditEvents && checked && archivedEvents);
-  form.downloadBtn.disabled = !(canViewEvents && checked);
-  form.exportBtn.disabled = !(canViewEvents && checked);
-  form.deleteBtn.disabled = !(canEditEvents && checked);
+
+    if ( WEB_LIST_THUMBS ) row.Thumbnail = '<div class="thumbnail" style="height: '+row.imgHeight+'px;"><a href="?view=event&amp;eid=' + eid + filterQuery + sortQuery + '&amp;page=1">' + row.imgHtml + '</a></div>';
+  });
+
+  return rows;
 }
 
-function deleteEvents( element ) {
-  if ( ! canEditEvents ) {
-    alert("You do not have permission to delete events.");
+// Returns the event id's of the selected rows
+function getIdSelections() {
+  const table = $j('#eventTable');
+
+  return $j.map(table.bootstrapTable('getSelections'), function(row) {
+    return strip_html(row.Id); // strip the html from the element before sending
+  });
+}
+
+// Returns a boolen to indicate at least one selected row is archived
+function getArchivedSelections() {
+  const table = $j('#eventTable');
+  const selection = $j.map(table.bootstrapTable('getSelections'), function(row) {
+    return row.Archived;
+  });
+  return selection.includes(yesString);
+}
+
+function onDeleteClick(evt) {
+  if (!canEdit.Events) {
+    enoperm();
     return;
   }
-  var form = element.form;
+  evt.preventDefault();
+  if (evt.shiftKey) {
+    const selections = getIdSelections();
+    deleteEvents(selections);
+  } else {
+    if (!document.getElementById('deleteConfirm')) {
+      // Load the delete confirmation modal into the DOM
+      $j.getJSON(thisUrl + '?request=modal&modal=delconfirm')
+          .done(function(data) {
+            insertModalHtml('deleteConfirm', data.html);
+            manageDelConfirmModalBtns();
+            $j('#deleteConfirm').modal('show');
+          })
+          .fail(function(jqXHR) {
+            console.log('error getting delconfirm', jqXHR);
+            logAjaxFail(jqXHR);
+          });
+      return;
+    } else {
+      document.getElementById('delConfirmBtn').disabled = false; // re-enable the button
+      $j('#deleteConfirm').modal('show');
+    }
+  } // Shift
+}
 
-  var count = 0;
-  // This is slightly more efficient than a jquery selector because we stop after finding one.
-  for (var i = 0; i < form.elements.length; i++) {
-    if (form.elements[i].name.indexOf('eids') == 0) {
-      if ( form.elements[i].checked ) {
-        count++;
-        break;
+// Manage the DELETE CONFIRMATION modal button
+function manageDelConfirmModalBtns() {
+  document.getElementById('delConfirmBtn').addEventListener('click', function onDelConfirmClick(evt) {
+    if (!canEdit.Events) {
+      enoperm();
+      return;
+    }
+    document.getElementById('delConfirmBtn').disabled = true; // prevent double click
+    evt.preventDefault();
+
+    const selections = getIdSelections();
+    if (!selections.length) {
+      alert('Please select events to delete.');
+    } else {
+      deleteEvents(selections);
+    }
+  });
+
+  // Manage the CANCEL modal button
+  document.getElementById('delCancelBtn').addEventListener('click', function onDelCancelClick(evt) {
+    $j('#deleteConfirm').modal('hide');
+  });
+}
+
+function unarchiveEvents(event_ids) {
+  const ticker = document.getElementById('unarchiveProgressTicker');
+  const chunk = event_ids.splice(0, 10);
+  console.log('unarchive ' + chunk.length + ' selections. ' + event_ids.length);
+
+  $j.ajax({
+    method: 'get',
+    timeout: 0,
+    url: thisUrl + '?request=events&task=unarchive',
+    data: {'eids[]': chunk},
+    success: function(data) {
+      if (data.message) alert(data.message.join("\n"));
+
+      if (!event_ids.length) {
+        $j('#eventTable').bootstrapTable('refresh');
+        $j('#unarchiveConfirm').modal('hide');
+      } else {
+        if ( ticker.innerHTML.length < 1 || ticker.innerHTML.length > 10 ) {
+          ticker.innerHTML = '.';
+        } else {
+          ticker.innerHTML = ticker.innerHTML + '.';
+        }
+        unarchiveEvents(event_ids);
       }
+    },
+    fail: function(jqxhr) {
+      logAjaxFail(jqxhr);
+      $j('#eventTable').bootstrapTable('refresh');
+      $j('#unarchiveConfirm').modal('hide');
     }
-  }
-  if ( count > 0 ) {
-    if ( confirm(confirmDeleteEventsString) ) {
-      form.elements['action'].value = 'delete';
-      form.submit();
-    }
-  }
+  });
 }
 
-function editEvents( element ) {
-  if ( ! canEditEvents ) {
-    alert("You do not have permission to delete events.");
-    return;
-  }
-  var form = element.form;
-  var eids = new Array();
-  for (var i = 0, len=form.elements.length; i < len; i++) {
-    if (form.elements[i].name.indexOf('eids') == 0) {
-      if ( form.elements[i].checked ) {
-        eids[eids.length] = 'eids[]='+form.elements[i].value;
+function deleteEvents(event_ids) {
+  const ticker = document.getElementById('deleteProgressTicker');
+  const chunk = event_ids.splice(0, 10);
+  console.log('Deleting ' + chunk.length + ' selections. ' + event_ids.length);
+
+  $j.ajax({
+    method: 'get',
+    timeout: 0,
+    url: thisUrl + '?request=events&task=delete',
+    data: {'eids[]': chunk},
+    success: function(data) {
+      if (data.message) alert(data.message.join("\n"));
+
+      if (!event_ids.length) {
+        $j('#eventTable').bootstrapTable('refresh');
+        $j('#deleteConfirm').modal('hide');
+      } else {
+        if ( ticker.innerHTML.length < 1 || ticker.innerHTML.length > 10 ) {
+          ticker.innerHTML = '.';
+        } else {
+          ticker.innerHTML = ticker.innerHTML + '.';
+        }
+        deleteEvents(event_ids);
       }
+    },
+    fail: function(jqxhr) {
+      logAjaxFail(jqxhr);
+      $j('#eventTable').bootstrapTable('refresh');
+      $j('#deleteConfirm').modal('hide');
     }
-  }
-  createPopup('?view=eventdetail&'+eids.join('&'), 'zmEventDetail', 'eventdetail');
+  });
 }
 
-function downloadVideo( element ) {
-  var form = element.form;
-  var eids = new Array();
-  for (var i = 0, len=form.elements.length; i < len; i++) {
-    if (form.elements[i].name.indexOf('eids') == 0 ) {
-      if ( form.elements[i].checked ) {
-        eids[eids.length] = 'eids[]='+form.elements[i].value;
-      }
-    }
-  }
-  createPopup( '?view=download&'+eids.join('&'), 'zmDownload', 'download' );
+function onDownloadClick(evt) {
+  evt.preventDefault();
+  $j.ajax({
+    method: 'POST',
+    timeout: 0,
+    url: thisUrl + '?request=modal&modal=download',
+    data: {'eids[]': getIdSelections()},
+    success: function(data) {
+      insertModalHtml('downloadModal', data.html);
+      $j('#downloadModal').modal('show');
+      // Manage the GENERATE DOWNLOAD button
+      $j('#exportButton').click(exportEvent);
+    },
+    error: logAjaxFail,
+  });
 }
 
-function exportEvents( element ) {
-  var form = element.form;
-  console.log(form);
-  form.action = '?view=export';
-  form.elements['view'].value='export';
-  form.submit();
+function getEventDetailModal(eid) {
+  $j.getJSON(thisUrl + '?request=modal&modal=eventdetail&eids[]=' + eid)
+      .done(function(data) {
+        insertModalHtml('eventDetailModal', data.html);
+        $j('#eventDetailModal').modal('show');
+        // Manage the Save button
+        $j('#eventDetailSaveBtn').click(function(evt) {
+          evt.preventDefault();
+          $j('#eventDetailForm').submit();
+        });
+      })
+      .fail(function(jqxhr) {
+        console.log("Fail get event details");
+        logAjaxFail(jqxhr);
+      });
 }
 
-function viewEvents( element ) {
-  var form = element.form;
-  var events = new Array();
-  for (var i = 0, len=form.elements.length; i < len; i++) {
-    if ( form.elements[i].name.indexOf('eids') == 0 ) {
-      if ( form.elements[i].checked ) {
-        events[events.length] = form.elements[i].value;
-      }
-    }
-  }
-  if ( events.length > 0 ) {
-    var filter = '&filter[Query][terms][0][attr]=Id&filter[Query][terms][0][op]=%3D%5B%5D&filter[Query][terms][0][val]='+events.join('%2C');
-    window.location.href = thisUrl+'?view=event&eid='+events[0]+filter+sortQuery+'&page=1&play=1';
-  }
-}
-
-function archiveEvents(element) {
-  var form = element.form;
-  form.elements['action'].value = 'archive';
-  form.submit();
-}
-
-function unarchiveEvents(element) {
-  if ( ! canEditEvents ) {
-    alert("You do not have permission to delete events.");
-    return;
-  }
-  var form = element.form;
-  form.elements['action'].value = 'unarchive';
-  form.submit();
-}
-
-if ( openFilterWindow ) {
-  //opener.location.reload(true);
-  createPopup( '?view=filter&page='+thisPage+filterQuery, 'zmFilter', 'filter' );
-  location.replace( '?view='+currentView+'&page='+thisPage+filterQuery );
-}
-
-function thumbnail_onmouseover(event) {
-  var img = event.target;
-  img.src = '';
-  img.src = img.getAttribute('stream_src');
-}
-function thumbnail_onmouseout(event) {
-  var img = event.target;
-  img.src = '';
-  img.src = img.getAttribute('still_src');
+function getObjdetectModal(eid) {
+  $j.getJSON(thisUrl + '?request=modal&modal=objdetect&eid=' + eid)
+      .done(function(data) {
+        insertModalHtml('objdetectModal', data.html);
+        $j('#objdetectModal').modal('show');
+      })
+      .fail(function(jqxhr) {
+        console.log("Fail get objdetect details");
+        logAjaxFail(jqxhr);
+      });
 }
 
 function initPage() {
-  if ( window.history.length == 1 ) {
-    $j('#controls').children().eq(0).html('');
+  // Remove the thumbnail column from the DOM if thumbnails are off globally
+  if (!WEB_LIST_THUMBS) $j('th[data-field="Thumbnail"]').remove();
+
+  // Init the bootstrap-table
+  table.bootstrapTable({icons: icons});
+
+  // Hide these columns on first run when no cookie is saved
+  if (!getCookie('zmEventsTable.bs.table.hiddenColumns')) {
+    // table.bootstrapTable('hideColumn', 'Archived');
+    table.bootstrapTable('hideColumn', 'Emailed');
   }
-  $j('.colThumbnail img').each(function() {
-    this.addEventListener('mouseover', thumbnail_onmouseover, false);
-    this.addEventListener('mouseout', thumbnail_onmouseout, false);
+
+  // enable or disable buttons based on current selection and user rights
+  table.on('check.bs.table uncheck.bs.table ' +
+  'check-all.bs.table uncheck-all.bs.table',
+  function() {
+    const selections = table.bootstrapTable('getSelections');
+
+    viewButton.prop('disabled', !(selections.length && canView.Events));
+    archiveButton.prop('disabled', !(selections.length && canEdit.Events));
+    if (!(getArchivedSelections() && canEdit.Events)) {
+      unarchiveButton.prop('disabled', true);
+      if (!getArchivedSelections()) {
+        unarchiveButton.prop('title', 'Please select an event that is archived.');
+      } else {
+        unarchiveButton.prop('title', 'You must have events edit permission to unarchive');
+      }
+    } else {
+      unarchiveButton.prop('disabled', false);
+      unarchiveButton.prop('title', unarchiveString);
+    }
+    editButton.prop('disabled', !(selections.length && canEdit.Events));
+    exportButton.prop('disabled', !(selections.length && canView.Events));
+    downloadButton.prop('disabled', !(selections.length && canView.Events));
+    deleteButton.prop('disabled', !(selections.length && canEdit.Events));
   });
-  $j('input[name=eids\\[\\]]').each(function() {
-    this.addEventListener('click', configureButton, false);
-  });
-  document.getElementById("refreshLink").addEventListener("click", function onRefreshClick(evt) {
-    evt.preventDefault();
-    window.location.reload(true);
-  });
-  document.getElementById("backLink").addEventListener("click", function onBackClick(evt) {
+
+  // Don't enable the back button if there is no previous zm page to go back to
+  backButton.prop('disabled', !document.referrer.length);
+
+  // Setup the thumbnail video animation
+  if (!isMobile()) initThumbAnimation();
+
+  // Some toolbar events break the thumbnail animation, so re-init eventlistener
+  table.on('all.bs.table', initThumbAnimation);
+
+  // Manage the BACK button
+  document.getElementById('backBtn').addEventListener('click', function onBackClick(evt) {
     evt.preventDefault();
     window.history.back();
   });
+
+  // Manage the REFRESH Button
+  document.getElementById('refreshBtn').addEventListener('click', function onRefreshClick(evt) {
+    evt.preventDefault();
+    window.location.reload(true);
+  });
+
+  // Manage the TIMELINE Button
+  document.getElementById('tlineBtn').addEventListener('click', function onTlineClick(evt) {
+    evt.preventDefault();
+    window.location.assign('?view=timeline'+filterQuery);
+  });
+
+  // Manage the FILTER Button
+  document.getElementById('filterBtn').addEventListener('click', function onFilterClick(evt) {
+    evt.preventDefault();
+    window.location.assign('?view=filter'+filterQuery);
+  });
+
+  // Manage the VIEW button
+  document.getElementById('viewBtn').addEventListener('click', function onViewClick(evt) {
+    var selections = getIdSelections();
+
+    evt.preventDefault();
+    var filter = '&filter[Query][terms][0][attr]=Id&filter[Query][terms][0][op]=%3D%5B%5D&filter[Query][terms][0][val]='+selections.join('%2C');
+    window.location.href = thisUrl+'?view=event&eid='+selections[0]+filter+sortQuery+'&page=1&play=1';
+  });
+
+  // Manage the ARCHIVE button
+  document.getElementById('archiveBtn').addEventListener('click', function onArchiveClick(evt) {
+    const selections = getIdSelections();
+
+    evt.preventDefault();
+    $j.ajax({
+      method: 'POST',
+      timeout: 0,
+      url: thisUrl + '?request=events&task=archive',
+      data: {'eids[]': selections},
+      success: function(data) {
+        $j('#eventTable').bootstrapTable('refresh');
+      },
+      fail: logAjaxFail
+    });
+  });
+
+  // Manage the UNARCHIVE button
+  document.getElementById('unarchiveBtn').addEventListener('click', function onUnarchiveClick(evt) {
+    if (!canEdit.Events) {
+      enoperm();
+      return;
+    }
+
+    if (evt.shiftKey) {
+      const selections = getIdSelections();
+      unarchiveEvents(selections);
+      return;
+    }
+
+    if (!document.getElementById('unarchiveConfirm')) {
+      // Load the unarchive confirmation modal into the DOM
+      $j.getJSON(thisUrl + '?request=modal&modal=eventunarchive')
+          .done(function(data) {
+            insertModalHtml('unarchiveConfirm', data.html);
+            document.getElementById('unarchiveConfirmBtn').addEventListener('click', function onUnarchiveConfirmClick(evt) {
+              if (!canEdit.Events) {
+                enoperm();
+                return;
+              }
+              evt.preventDefault();
+
+              const selections = getIdSelections();
+              if (!selections.length) {
+                alert('Please select events to Unarchive.');
+              } else {
+                document.getElementById('unarchiveConfirmBtn').disabled = true; // prevent double click
+                unarchiveEvents(selections);
+              }
+            });
+
+            // Manage the CANCEL modal button
+            document.getElementById('unarchiveCancelBtn').addEventListener('click', function onUnarchiveCancelClick(evt) {
+              $j('#unarchiveConfirm').modal('hide');
+            });
+
+            $j('#unarchiveConfirm').modal('show');
+          })
+          .fail(function(jqXHR) {
+            console.log('error getting unarchiveevent', jqXHR);
+            logAjaxFail(jqXHR);
+          });
+      return;
+    } else {
+      document.getElementById('unarchiveConfirmBtn').disabled = false; // re-enable the button
+      $j('#unarchiveConfirm').modal('show');
+    }
+  });
+
+  // Manage the EDIT button
+  document.getElementById('editBtn').addEventListener('click', function onEditClick(evt) {
+    if (!canEdit.Events) {
+      enoperm();
+      return;
+    }
+
+    evt.preventDefault();
+    $j.ajax({
+      method: 'POST',
+      timeout: 0,
+      url: thisUrl + '?request=modal&modal=eventdetail',
+      data: {'eids[]': getIdSelections()},
+      success: function(data) {
+        insertModalHtml('eventDetailModal', data.html);
+        $j('#eventDetailModal').modal('show');
+        // Manage the Save button
+        $j('#eventDetailSaveBtn').click(function(evt) {
+          evt.preventDefault();
+          $j('#eventDetailForm').submit();
+        });
+      },
+      error: logAjaxFail
+    });
+  });
+
+  // Manage the EXPORT button
+  document.getElementById('exportBtn').addEventListener('click', function onExportClick(evt) {
+    const selections = getIdSelections();
+
+    // FIXME must be a post if too many eids
+    evt.preventDefault();
+    window.location.assign('?view=export&eids[]='+selections.join('&eids[]='));
+  });
+
+  // Manage the DOWNLOAD VIDEO button
+  document.getElementById('downloadBtn').addEventListener('click', onDownloadClick);
+
+  // Manage the DELETE button
+  document.getElementById('deleteBtn').addEventListener('click', onDeleteClick);
+
+  // Update table links each time after new data is loaded
+  table.on('post-body.bs.table', function(data) {
+    // Manage the Object Detection links in the events list
+    $j('.objDetectLink').click(function(evt) {
+      evt.preventDefault();
+      getObjdetectModal($j(this).data('eid'));
+    });
+
+    // Manage the eventdetail links in the events list
+    $j('.eDetailLink').click(function(evt) {
+      evt.preventDefault();
+      getEventDetailModal($j(this).data('eid'));
+    });
+
+    const thumb_ndx = $j('#eventTable tr th').filter(function() {
+      const data_field = $j(this).attr('data-field');
+      return data_field && data_field.toLowerCase().trim() == 'thumbnail';
+    }).index();
+    table.find('tr td:nth-child(' + (thumb_ndx+1) + ')').addClass('colThumbnail');
+  });
+
+  if (navbar_type != 'left') {
+    // If new menu is used, then Datepicker initialization occurs in main "skin.js"
+    // Reinitialization is not allowed because the 'Destroy' method is missing.
+    initDatepickerEventsPage();
+  }
+
+  window.onpageshow = function(evt) {
+    console.log('Refreshing table');
+    table.bootstrapTable('refresh');
+  };
+
+  // Set initial history state so the first filter change creates a new history entry
+  const initialUrl = '?view=events' + filterQuery + sortQuery;
+  history.replaceState({filterQuery: filterQuery, sortQuery: sortQuery}, '', initialUrl);
+
+  // Handle browser back/forward navigation
+  window.addEventListener('popstate', function(event) {
+    if (!event.state) return;
+
+    // Parse URL parameters and update form fields
+    const urlParams = new URLSearchParams(window.location.search);
+    $j('#fieldsTable input, #fieldsTable select').each(function() {
+      const el = $j(this);
+      const name = el.attr('name');
+      if (urlParams.has(name)) {
+        el.val(urlParams.get(name));
+      }
+    });
+
+    // Restore sortQuery from state if available
+    if (event.state.sortQuery !== undefined) {
+      sortQuery = event.state.sortQuery;
+    }
+
+    // Rebuild filterQuery and refresh without pushing another history entry
+    filterEvents({}, {skipPushState: true});
+  });
+
+  table.bootstrapTable('resetSearch');
+  // The table is initially given a hidden style, so now that we are done rendering, show it
+  table.show();
 }
 
-$j(document).ready(initPage);
+function initDatepickerEventsPage() {
+  $j('#fieldsTable input, #fieldsTable select').each(function(index) {
+    const el = $j(this);
+    if (el.hasClass('datetimepicker')) {
+      el.datetimepicker({timeFormat: "HH:mm:ss", dateFormat: "yy-mm-dd", maxDate: 0, constrainInput: false, onClose: filterEvents});
+    } else if (el.hasClass('datepicker')) {
+      el.datepicker({dateFormat: "yy-mm-dd", maxDate: 0, constrainInput: false, onClose: filterEvents});
+    } else {
+      el.on('change', filterEvents);
+    }
+  });
+}
+
+// Build filterQuery string from current form field values
+function buildFilterQuery() {
+  var query = '';
+  $j('#fieldsTable input, #fieldsTable select').each(function() {
+    const el = $j(this);
+    query += '&' + encodeURIComponent(el.attr('name')) + '=' + encodeURIComponent(el.val());
+  });
+  return query;
+}
+
+// Persist every filter term that carries a data-cookie (Monitor, Group,
+// StartDateTime, Notes, Tags, ...) so the selection is shared with the console,
+// montage and montage review views. setCookie JSON-encodes arrays, matching how
+// getFilterSelection() reads the zmFilter_* cookies. refs #4976
+function persistFilterCookies() {
+  $j('#fieldsTable [data-cookie]').each(function persistOne() {
+    const el = $j(this);
+    setCookie(el.attr('data-cookie'), el.val());
+  });
+}
+
+function filterEvents(clickedElement, options) {
+  options = options || {};
+  if (clickedElement.target && clickedElement.target.id == 'filterArchived') {
+    setCookie('zmFilterArchived', clickedElement.target.value);
+  }
+  // Don't rewrite cookies when restoring state from a back/forward navigation.
+  if (!options.skipPushState) {
+    persistFilterCookies();
+  }
+  filterQuery = buildFilterQuery();
+
+  // Update URL using pushState so filter state can be shared and back/forward works
+  if (!options.skipPushState) {
+    const newUrl = '?view=events' + filterQuery + sortQuery;
+    history.pushState({filterQuery: filterQuery, sortQuery: sortQuery}, '', newUrl);
+  }
+
+  table.bootstrapTable('refresh');
+}
+
+// Footer formatter for total duration
+function totalLengthFormatter(data) {
+  if (footerData.Length) {
+    const totalSeconds = Math.floor(footerData.Length);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return String(hours).padStart(2, '0') + ':' +
+           String(minutes).padStart(2, '0') + ':' +
+           String(seconds).padStart(2, '0');
+  }
+  return '';
+}
+
+// Footer formatter for total disk space
+function totalDiskSpaceFormatter(data) {
+  return footerData.DiskSpace || '';
+}
+
+$j(document).ready(function() {
+  initPage();
+});

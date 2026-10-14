@@ -42,12 +42,22 @@ our @ISA = qw(Exporter ZoneMinder::Base);
 # will save memory.
 our %EXPORT_TAGS = (
     constants => [ qw(
+      DEBUG9
+      DEBUG8
+      DEBUG7
+      DEBUG6
+      DEBUG5
+      DEBUG4
+      DEBUG3
+      DEBUG2
+      DEBUG1
       DEBUG
       INFO
       WARNING
       ERROR
       FATAL
       PANIC
+      AUDIT
       NOLOG
       ) ],
     functions => [ qw(
@@ -66,10 +76,12 @@ our %EXPORT_TAGS = (
       Dump
       Debug
       Info
+      Warn
       Warning
       Error
       Fatal
       Panic
+      Audit
       ) ]
     );
 
@@ -98,33 +110,63 @@ use Time::HiRes qw/gettimeofday/;
 use Sys::Syslog;
 
 use constant {
+  DEBUG9 => 9,
+  DEBUG8 => 8,
+  DEBUG7 => 7,
+  DEBUG6 => 6,
+  DEBUG5 => 5,
+  DEBUG4 => 4,
+  DEBUG3 => 3,
+  DEBUG2 => 2,
+  DEBUG1 => 1,
   DEBUG => 1,
   INFO => 0,
   WARNING => -1,
   ERROR => -2,
   FATAL => -3,
   PANIC => -4,
-  NOLOG => -5
+  AUDIT => -5,
+  NOLOG => -6
 };
 
 our %codes = (
-    &DEBUG => 'DBG',
+    &DEBUG9 => 'DB9',
+    &DEBUG8 => 'DB8',
+    &DEBUG7 => 'DB7',
+    &DEBUG6 => 'DB6',
+    &DEBUG5 => 'DB5',
+    &DEBUG4 => 'DB4',
+    &DEBUG3 => 'DB3',
+    &DEBUG2 => 'DB2',
+    &DEBUG1 => 'DB1',
+    &DEBUG => 'DB1',
     &INFO => 'INF',
     &WARNING => 'WAR',
     &ERROR => 'ERR',
     &FATAL => 'FAT',
     &PANIC => 'PNC',
+    &AUDIT => 'AUD',
     &NOLOG => 'OFF'
     );
 
 our %priorities = (
-    &DEBUG => 'debug',
-    &INFO => 'info',
-    &WARNING => 'warning',
-    &ERROR => 'err',
-    &FATAL => 'err',
-    &PANIC => 'err'
-    );
+  &DEBUG9 => 'debug',
+  &DEBUG8 => 'debug',
+  &DEBUG7 => 'debug',
+  &DEBUG6 => 'debug',
+  &DEBUG5 => 'debug',
+  &DEBUG4 => 'debug',
+  &DEBUG3 => 'debug',
+  &DEBUG2 => 'debug',
+  &DEBUG1 => 'debug',
+  &DEBUG => 'debug',
+  &INFO => 'info',
+  &WARNING => 'warning',
+  &ERROR => 'err',
+  &FATAL => 'err',
+  &PANIC => 'err',
+  &AUDIT => 'notice'
+);
 
 our $logger;
 our $LOGFILE;
@@ -176,6 +218,7 @@ sub BEGIN {
     my %dbgConfig = (
         ZM_LOG_LEVEL_DATABASE => 0,
         ZM_LOG_LEVEL_FILE => 0,
+        ZM_LOG_LEVEL_TERM => 0,
         ZM_LOG_LEVEL_SYSLOG => 0,
         ZM_LOG_DEBUG => 0,
         ZM_LOG_DEBUG_TARGET => '',
@@ -218,7 +261,13 @@ sub initialise( @ ) {
   my $tempFileLevel = $this->{fileLevel};
   my $tempSyslogLevel = $this->{syslogLevel};
 
-  $tempTermLevel = $options{termLevel} if defined($options{termLevel});
+  if ( defined($ENV{LOG_PRINT}) ) {
+    $tempTermLevel = $ENV{LOG_PRINT} ? DEBUG : $this->{termLevel};
+  } elsif ( defined($options{termLevel}) ) {
+    $tempFileLevel = $options{termLevel};
+  } else {
+    $tempFileLevel = $ZoneMinder::Config::Config{ZM_LOG_LEVEL_TERM};
+  }
   if ( defined($options{databaseLevel}) ) {
     $tempDatabaseLevel = $options{databaseLevel};
   } else {
@@ -233,10 +282,6 @@ sub initialise( @ ) {
     $tempSyslogLevel = $options{syslogLevel};
   } else {
     $tempSyslogLevel = $ZoneMinder::Config::Config{ZM_LOG_LEVEL_SYSLOG};
-  }
-
-  if ( defined($ENV{LOG_PRINT}) ) {
-    $tempTermLevel = $ENV{LOG_PRINT}? DEBUG : NOLOG;
   }
 
   my $level;
@@ -280,9 +325,6 @@ sub initialise( @ ) {
   $this->{autoFlush} = $ENV{LOG_FLUSH}?1:0 if defined($ENV{LOG_FLUSH});
 
   $this->{initialised} = !undef;
-
-  # this function can get called on a previously initialized log Object, so clean any sth's
-  $this->{sth} = undef;
 
   Debug( 'LogOpts: level='.$codes{$this->{level}}
       .'/'.$codes{$this->{effectiveLevel}}
@@ -332,9 +374,9 @@ sub reinitialise {
 sub limit {
   my $this = shift;
   my $level = shift;
-  return(DEBUG) if $level > DEBUG;
-  return(NOLOG) if $level < NOLOG;
-  return($level);
+  return DEBUG9 if $level > DEBUG9;
+  return NOLOG if $level < NOLOG;
+  return $level;
 }
 
 sub getTargettedEnv {
@@ -424,12 +466,8 @@ sub termLevel {
   my $this = shift;
   my $termLevel = shift;
   if ( defined($termLevel) ) {
-    # What is the point of this next lint if we are just going to overwrite it with the next line? I propose we move it down one line or remove it altogether
-    $termLevel = NOLOG if !$this->{hasTerm};
     $termLevel = $this->limit($termLevel);
-    if ( $this->{termLevel} != $termLevel ) {
-      $this->{termLevel} = $termLevel;
-    }
+    $this->{termLevel} = $termLevel;
   }
   return $this->{termLevel};
 }
@@ -444,7 +482,6 @@ sub databaseLevel {
     } else {
       undef($this->{dbh});
     }
-    $this->{sth} = undef;
     $this->{databaseLevel} = $databaseLevel;
   }
   return $this->{databaseLevel};
@@ -456,9 +493,9 @@ sub fileLevel {
   if ( defined($fileLevel) ) {
     $fileLevel = $this->limit($fileLevel);
     # The filename might have changed, so always close and re-open
-    $this->closeFile() if ( $this->{fileLevel} > NOLOG );
+    $this->closeFile() if $this->{fileLevel} > NOLOG;
     $this->{fileLevel} = $fileLevel;
-    $this->openFile() if ( $this->{fileLevel} > NOLOG );
+    $this->openFile() if $this->{fileLevel} > NOLOG;
   }
   return $this->{fileLevel};
 }
@@ -499,13 +536,14 @@ sub logFile {
 
 sub openFile {
   my $this = shift;
+	
   if ( open($LOGFILE, '>>', $this->{logFile}) ) {
     $LOGFILE->autoflush() if $this->{autoFlush};
 
     my $webUid = (getpwnam($ZoneMinder::Config::Config{ZM_WEB_USER}))[2];
-    Error("Can't get uid for $ZoneMinder::Config::Config{ZM_WEB_USER}") if ! defined $webUid;
+    Error('Can\'t get uid for '.$ZoneMinder::Config::Config{ZM_WEB_USER}) if ! defined $webUid;
     my $webGid = (getgrnam($ZoneMinder::Config::Config{ZM_WEB_GROUP}))[2];
-    Error("Can't get gid for $ZoneMinder::Config::Config{ZM_WEB_USER}") if ! defined $webGid;
+    Error('Can\'t get gid for '.$ZoneMinder::Config::Config{ZM_WEB_USER}) if ! defined $webGid;
     if ( $> == 0 ) {
       # If we are root, we want to make sure that www-data or whatever owns the file
       chown($webUid, $webGid, $this->{logFile} ) or
@@ -519,7 +557,6 @@ sub openFile {
 }
 
 sub closeFile {
-  #my $this = shift;
   close($LOGFILE) if fileno($LOGFILE);
 }
 
@@ -569,7 +606,6 @@ sub logPrint {
 
     if ( $level <= $this->{databaseLevel} ) {
       if ( ! ( $ZoneMinder::Database::dbh and $ZoneMinder::Database::dbh->ping() ) ) {
-        $this->{sth} = undef;
         # Turn this off because zDbConnect will do logging calls.
         my $oldlevel = $this->{databaseLevel};
         $this->{databaseLevel} = NOLOG;
@@ -580,15 +616,15 @@ sub logPrint {
         $this->{databaseLevel} = $oldlevel;
       }
 
-      my $sql = 'INSERT INTO Logs ( TimeKey, Component, ServerId, Pid, Level, Code, Message, File, Line ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, NULL )';
-      $this->{sth} = $ZoneMinder::Database::dbh->prepare_cached($sql) if ! $this->{sth};
-      if ( !$this->{sth} ) {
+      my $sql = 'INSERT INTO Logs ( TimeKey, Component, ServerId, Pid, Level, Code, Message, File, Line ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )';
+      my $sth = $ZoneMinder::Database::dbh->prepare_cached($sql);
+      if ( !$sth ) {
         $this->{databaseLevel} = NOLOG;
         Error("Can't prepare log entry '$sql': ".$ZoneMinder::Database::dbh->errstr());
         return;
       } 
 
-      my $res = $this->{sth}->execute(
+      my $res = $sth->execute(
         $seconds+($microseconds/1000000.0),
            $this->{id},
            ($ZoneMinder::Config::Config{ZM_SERVER_ID} ? $ZoneMinder::Config::Config{ZM_SERVER_ID} : undef),
@@ -597,6 +633,7 @@ sub logPrint {
            $codes{$level},
            $string,
            $this->{fileName},
+           $line
           );
       if ( !$res ) {
         $this->{databaseLevel} = NOLOG;
@@ -610,6 +647,8 @@ sub logInit( ;@ ) {
   my %options = @_ ? @_ : ();
   $logger = ZoneMinder::Logger->new() if !$logger;
   $logger->initialise(%options);
+  logSetSignal();
+  return $logger;
 }
 
 sub logReinit {
@@ -626,12 +665,31 @@ sub logHupHandler {
   $do_log_rotate = 1;
 }
 
+sub logUSR1Handler {
+  $logger->level($logger->level()+1);
+  Info('Logger - Level changed to '. $logger->level() . '=>'.$codes{$logger->level()});
+}
+
+sub logUSR2Handler {
+  $logger->level($logger->level()-1);
+  Info('Logger - Level changed to '. $logger->level() . '=>'.$codes{$logger->level()});
+}
+
 sub logSetSignal {
+  # SIGHUP means reload, which for most daemons means exiting so that zmdc
+  # restarts them. logrotate only needs the file handle dropped, so it sends
+  # SIGWINCH instead.
+  $SIG{WINCH} = \&logHupHandler;
   $SIG{HUP} = \&logHupHandler;
+  $SIG{USR1} = \&logUSR1Handler;
+  $SIG{USR2} = \&logUSR2Handler;
 }
 
 sub logClearSignal {
+  $SIG{WINCH} = 'DEFAULT';
   $SIG{HUP} = 'DEFAULT';
+  $SIG{USR1} = 'DEFAULT';
+  $SIG{USR2} = 'DEFAULT';
 }
 
 sub logLevel {
@@ -674,56 +732,51 @@ sub Dump {
 
 sub debug {
   my $log = shift;
-  $log->logPrint(DEBUG, @_, caller);
+  $log->logPrint(DEBUG1, @_, caller);
 }
 
-sub Debug( @ ) {
-  fetch()->logPrint(DEBUG, @_, caller);
+sub Debug {
+  fetch()->logPrint(
+    (@_ == 1 ? (DEBUG1, @_) : @_),
+    caller);
 }
 
-sub Info( @ ) {
-  fetch()->logPrint(INFO, @_, caller);
-}
+sub Info { fetch()->logPrint(INFO, @_, caller); }
 sub info {
   my $log = shift;
   $log->logPrint(INFO, @_, caller);
 }
 
-sub Warning( @ ) {
-  fetch()->logPrint(WARNING, @_, caller);
-}
+sub Warn { fetch()->logPrint(WARNING, @_, caller); }
+sub Warning { fetch()->logPrint(WARNING, @_, caller); }
 sub warn {
   my $log = shift;
   $log->logPrint(WARNING, @_, caller);
 }
 
-sub Error( @ ) {
-  fetch()->logPrint(ERROR, @_, caller);
-}
+sub Error { fetch()->logPrint(ERROR, @_, caller); }
 sub error {
   my $log = shift;
   $log->logPrint(ERROR, @_, caller);
 }
 
-sub Fatal( @ ) {
+sub Fatal {
   my $this = fetch();
   $this->logPrint(FATAL, @_, caller);
   if ( $SIG{TERM} and ( $SIG{TERM} ne 'DEFAULT' ) ) {
     $SIG{TERM}();
-  }
-  if ( $$this{sth} ) {
-    $$this{sth}->finish();
-    $$this{sth} = undef;
   }
   # I think if we don't disconnect we will leave sockets around in TIME_WAIT
   ZoneMinder::Database::zmDbDisconnect();
   exit(-1);
 }
 
-sub Panic( @ ) {
+sub Panic {
   fetch()->logPrint(PANIC, @_, caller);
   confess($_[0]);
 }
+
+sub Audit { fetch()->logPrint(AUDIT, @_, caller); }
 
 1;
 __END__
@@ -795,8 +848,6 @@ Used to end the debug session and close any logs etc. Not usually necessary.
 =item $level         = logLevel ( [$level] );
 
 =item $trace         = logTrace ( [$trace] );
-
-=item $level         = logLevel ( [$level] );
 
 =item $termLevel     = logTermLevel ( [$termLevel] );
 
@@ -873,9 +924,8 @@ Philip Coombes, E<lt>philip.coombes@zoneminder.comE<gt>
 
 Copyright (C) 2001-2008  Philip Coombes
 
-This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.3 or,
-at your option, any later version of Perl 5 you may have available.
+Licensed under the GNU General Public License v2 or later; see the COPYING
+file distributed with ZoneMinder for the full text.
 
 
 =cut

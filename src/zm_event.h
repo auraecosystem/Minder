@@ -1,179 +1,221 @@
 //
 // ZoneMinder Core Interfaces, $Date$, $Revision$
 // Copyright (C) 2001-2008 Philip Coombes
-// 
+//
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
 // as published by the Free Software Foundation; either version 2
 // of the License, or (at your option) any later version.
-// 
+//
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
-// 
+//
 // You should have received a copy of the GNU General Public License
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-// 
+//
 
 #ifndef ZM_EVENT_H
 #define ZM_EVENT_H
 
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <errno.h>
-#include <limits.h>
-#include <time.h>
-#include <sys/time.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <mysql/mysql.h>
-
-#include <set>
-#include <map>
-#include <queue>
-
-#include "zm.h"
-#include "zm_image.h"
-#include "zm_stream.h"
-#include "zm_video.h"
+#include "zm_config.h"
+#include "zm_define.h"
+#include "zm_packet.h"
+#include "zm_packetqueue.h"
 #include "zm_storage.h"
+#include "zm_time.h"
+#include "zm_utils.h"
+#include "zm_zone.h"
 
-class Zone;
-class Monitor;
+#include <atomic>
+#include <condition_variable>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <set>
+#include <thread>
+
+
 class EventStream;
+class Frame;
+class Image;
+class Monitor;
+class Tag;
+class VideoStore;
+class ZMPacket;
+class Zone;
 
-#define MAX_PRE_ALARM_FRAMES  16 // Maximum number of prealarm frames that can be stored
+// True when a failed link(2) means renaming instead is worth trying, rather
+// than something being wrong that a rename would hit too. EXDEV is deliberately
+// excluded: a cross-device link is one rename(2) cannot do either.
+//
+// EOPNOTSUPP (and its alias ENOTSUP) and ENOSYS mean the filesystem has no hard
+// links at all, on both platforms.
+//
+// EPERM only means that on Linux, where the VFS returns it for a filesystem
+// with no link operation, which is the exFAT and FAT case. Linux overloads it
+// with fs.protected_hardlinks, immutable sources and idmapped mounts, so this
+// is a broader "try the rename" than the errno alone proves; rename is the
+// right attempt in all of those, and where it genuinely cannot proceed it fails
+// and gets reported. FreeBSD is excluded because there EPERM only ever means a
+// directory source, an immutable source or an immutable target directory, all
+// real errors, and absent link support arrives as EOPNOTSUPP above.
+// See https://github.com/ZoneMinder/zoneminder/issues/5048
+inline bool ErrnoMeansNoHardLinkSupport(int err) {
+  if ((err == EOPNOTSUPP) || (err == ENOTSUP) || (err == ENOSYS)) return true;
+#ifndef __FreeBSD__
+  if (err == EPERM) return true;
+#endif
+  return false;
+}
+
+// Maximum number of prealarm frames that can be stored
+#define MAX_PRE_ALARM_FRAMES  16
+
 typedef uint64_t event_id_t;
-    typedef enum { NORMAL=0, BULK, ALARM } FrameType;
 
-#include "zm_frame.h"
 //
 // Class describing events, i.e. captured periods of activity.
 //
 class Event {
   friend class EventStream;
 
-  public:
-    typedef std::set<std::string> StringSet;
-    typedef std::map<std::string,StringSet> StringSetMap;
+ public:
+  typedef std::set<std::string> StringSet;
+  typedef std::map<std::string, StringSet> StringSetMap;
 
-  protected:
-    static const char * frame_type_names[3];
+ protected:
+  static const char * frame_type_names[3];
 
-    struct PreAlarmData {
-      Image *image;
-      struct timeval timestamp;
-      unsigned int score;
-      Image *alarm_frame;
-    };
-    std::queue<Frame*> frame_data;
+  struct PreAlarmData {
+    Image *image;
+    struct timeval timestamp;
+    unsigned int score;
+    Image *alarm_frame;
+  };
+  std::queue<Frame*> frame_data;
 
-    static int pre_alarm_count;
-    static PreAlarmData pre_alarm_data[MAX_PRE_ALARM_FRAMES];
+  static int pre_alarm_count;
+  static PreAlarmData pre_alarm_data[MAX_PRE_ALARM_FRAMES];
 
-    uint64_t  id;
-    Monitor      *monitor;
-    struct timeval  start_time;
-    struct timeval  end_time;
-    std::string     cause;
-    StringSetMap    noteSetMap;
-    bool            videoEvent;
-    int        frames;
-    int        alarm_frames;
-    bool alarm_frame_written;
-    unsigned int  tot_score;
-    unsigned int  max_score;
-    char      path[PATH_MAX];
-    char snapshot_file[PATH_MAX];
-    char alarm_file[PATH_MAX];
-    VideoWriter* videowriter;
-    FILE* timecodes_fd;
-    char video_name[PATH_MAX];
-    char video_file[PATH_MAX];
-    char timecodes_name[PATH_MAX];
-    char timecodes_file[PATH_MAX];
-    int        last_db_frame;
-    Storage::Schemes  scheme;
+  uint64_t  id;
+  Monitor      *monitor;
+  Storage *storage;
+  PacketQueue * packetqueue;
+  packetqueue_iterator * packetqueue_it;
+  SystemTimePoint start_time;
+  SystemTimePoint end_time;
+  std::string     cause;
+  StringSetMap    noteSetMap;
+  int        frames;
+  int        alarm_frames;
+  bool alarm_frame_written;
+  int  tot_score;
+  int  max_score;
+  int max_score_frame_id;
+  std::string path;
+  std::string snapshot_file;
+  bool snapshot_file_written;
+  std::string alarm_file;
+  VideoStore *videoStore;
 
-    void createNotes( std::string &notes );
+  std::string container;
+  std::string codec;
+  std::string video_file;
+  std::string video_path;
+  std::string video_incomplete_file;
+  std::string video_incomplete_path;
 
-  public:
-    static bool OpenFrameSocket( int );
-    static bool ValidateFrameSocket( int );
+  int        last_db_frame;
+  bool have_video_keyframe; // a flag to tell us if we have had a video keyframe when writing an mp4.  The first frame SHOULD be a video keyframe.
+  Storage::Schemes  scheme;
+  int save_jpegs;
 
-    Event( Monitor *p_monitor, struct timeval p_start_time, const std::string &p_cause, const StringSetMap &p_noteSetMap, bool p_videoEvent=false );
-    ~Event();
+  void createNotes(std::string &notes);
 
-    uint64_t Id() const { return id; }
-    const std::string &Cause() { return cause; }
-    int Frames() const { return frames; }
-    int AlarmFrames() const { return alarm_frames; }
+  void Run();
 
-    const struct timeval &StartTime() const { return start_time; }
-    const struct timeval &EndTime() const { return end_time; }
-    struct timeval &StartTime() { return start_time; }
-    struct timeval &EndTime() { return end_time; }
+  std::atomic<bool> terminate_;
+  std::thread thread_;
 
-    bool SendFrameImage( const Image *image, bool alarm_frame=false );
-    bool WriteFrameImage( Image *image, struct timeval timestamp, const char *event_file, bool alarm_frame=false );
-    bool WriteFrameVideo( const Image *image, const struct timeval timestamp, VideoWriter* videow );
+  std::map<const std::string,Tag> tags;
+ public:
+  static bool OpenFrameSocket(int);
+  static bool ValidateFrameSocket(int);
 
-    void updateNotes( const StringSetMap &stringSetMap );
+  Event(Monitor *p_monitor,
+      packetqueue_iterator * p_packetqueue_it,
+      SystemTimePoint p_start_time,
+      const std::string &p_cause,
+      const StringSetMap &p_noteSetMap);
+  ~Event();
 
-    void AddFrames( int n_frames, Image **images, struct timeval **timestamps );
-    void AddFrame( Image *image, struct timeval timestamp, int score=0, Image *alarm_frame=NULL );
+  uint64_t Id() const { return id; }
+  const std::string &Cause() const { return cause; }
+  void addNote(const char *cause, const std::string &note);
+  int Frames() const { return frames; }
+  int AlarmFrames() const { return alarm_frames; }
 
-  private:
-    void AddFramesInternal( int n_frames, int start_frame, Image **images, struct timeval **timestamps );
-    void WriteDbFrames();
-    void UpdateFramesDelta(double offset);
+  SystemTimePoint StartTime() const { return start_time; }
+  SystemTimePoint EndTime() const { return end_time; }
+  TimePoint::duration Duration() const { return end_time - start_time; };
 
-  public:
-    static const char *getSubPath(struct tm *time) {
-      static char subpath[PATH_MAX] = "";
-      snprintf(subpath, sizeof(subpath),
-          "%02d/%02d/%02d/%02d/%02d/%02d",
-          time->tm_year-100, time->tm_mon+1, time->tm_mday, time->tm_hour, time->tm_min, time->tm_sec
-          );
-      return subpath;
-    }
-    static const char *getSubPath( time_t *time ) {
-      return Event::getSubPath(localtime(time));
-    }
+  void AddPacket_(const std::shared_ptr<ZMPacket> p);
+  bool WritePacket(const std::shared_ptr<ZMPacket> p);
+  bool SendFrameImage(const Image *image, bool alarm_frame=false);
+  bool WriteFrameImage(Image *image, SystemTimePoint timestamp, const char *event_file, bool alarm_frame = false) const;
 
-    char* getEventFile(void) { return video_file; }
+  void updateNotes(const StringSetMap &stringSetMap);
 
-    static int PreAlarmCount() {
-      return pre_alarm_count;
-    }
-    static void EmptyPreAlarmFrames() {
-      if ( pre_alarm_count > 0 ) {
-        for ( int i = 0; i < MAX_PRE_ALARM_FRAMES; i++ ) {
-          delete pre_alarm_data[i].image;
-          delete pre_alarm_data[i].alarm_frame;
-        }
-        memset( pre_alarm_data, 0, sizeof(pre_alarm_data) );
-      }
-      pre_alarm_count = 0;
-    }
-    static void AddPreAlarmFrame( Image *image, struct timeval timestamp, int score=0, Image *alarm_frame=NULL ) {
-      pre_alarm_data[pre_alarm_count].image = new Image( *image );
-      pre_alarm_data[pre_alarm_count].timestamp = timestamp;
-      pre_alarm_data[pre_alarm_count].score = score;
-      if ( alarm_frame ) {
-        pre_alarm_data[pre_alarm_count].alarm_frame = new Image( *alarm_frame );
-      }
-      pre_alarm_count++;
-    }
-    void SavePreAlarmFrames() {
-      for ( int i = 0; i < pre_alarm_count; i++ ) {
-        AddFrame( pre_alarm_data[i].image, pre_alarm_data[i].timestamp, pre_alarm_data[i].score, pre_alarm_data[i].alarm_frame );
-      }
-      EmptyPreAlarmFrames();
-    }
+  void AddFrame(const std::shared_ptr<ZMPacket>&packet);
+
+  void Stop() {
+    terminate_ = true;
+    packetqueue->notify_all();
+  }
+  bool Stopped() const { return terminate_; }
+
+ private:
+  void WriteDbFrames();
+  bool SetPath(Storage *storage);
+
+ public:
+  static std::string getSubPath(tm time) {
+    std::string subpath = stringtf("%02d/%02d/%02d/%02d/%02d/%02d",
+                                   time.tm_year - 100, time.tm_mon + 1, time.tm_mday,
+                                   time.tm_hour, time.tm_min, time.tm_sec);
+    return subpath;
+  }
+  static std::string getSubPath(time_t *time) {
+    tm time_tm = {};
+    localtime_r(time, &time_tm);
+    return Event::getSubPath(time_tm);
+  }
+
+  const char* getEventFile() const {
+    return video_file.c_str();
+  }
+
+  static int PreAlarmCount() {
+    return pre_alarm_count;
+  }
+  static void EmptyPreAlarmFrames() {
+    pre_alarm_count = 0;
+  }
+  static void AddPreAlarmFrame(
+    Image *image,
+    SystemTimePoint timestamp,
+    int score=0,
+    Image *alarm_frame=nullptr
+  ) {
+    pre_alarm_count++;
+  }
+  void SavePreAlarmFrames() {
+    EmptyPreAlarmFrames();
+  }
+  int MonitorId() const;
 };
-
 #endif // ZM_EVENT_H

@@ -11,22 +11,41 @@
 
 textarea,
 input[name="newMonitor[Name]"],
+input[name="newMonitor[Path]"],
+input[name="newMonitor[SecondPath]"],
 input[name="newMonitor[LabelFormat]"],
 input[name="newMonitor[ControlDevice]"],
-input[name="newMonitor[ControlAddress]"] {
+input[name="newMonitor[ControlAddress]"],
+input[name="newMonitor[ONVIF_URL]"],
+input[name="newMonitor[ONVIF_Events_Path]"],
+input[name="newMonitor[ONVIF_Options]"],
+input[name="newMonitor[ONVIF_Alarm_Text]"],
+input[name="newMonitor[EventStartCommand]"],
+input[name="newMonitor[EventEndCommand]"],
+input[name="newMonitor[MQTT_Subscriptions]"] {
   width: 100%;
+	min-width: 240px;
+}
+input[name="newMonitor[ONVIF_URL]"] {
+	min-width: 340px;
+}
+input[name="newMonitor[ONVIF_Username]"],
+input[name="newMonitor[ONVIF_Password]"],
+input[name="newMonitor[LabelFormat]"]{
+	min-width: 240px;
 }
 input[name="newMonitor[AnalysisFPSLimit]"],
 input[name="newMonitor[MaxFPS]"],
 input[name="newMonitor[AlarmMaxFPS]"],
 input[name="newMonitor[V4LCapturesPerFrame]"]{
-    width: 60px;
+    width: 75px;
 }
 input[name="newMonitor[Port]"],
 input[name="newMonitor[Refresh]"],
 input[name="newMonitor[LabelX]"],
 input[name="newMonitor[LabelY]"],
 input[name="newMonitor[ImageBufferCount]"],
+input[name="newMonitor[MaxImageBufferCount]"],
 input[name="newMonitor[WarmupCount]"],
 input[name="newMonitor[PreEventCount]"],
 input[name="newMonitor[PostEventCount]"],
@@ -39,6 +58,115 @@ input[name="newMonitor[Width]"],
 input[name="newMonitor[Height]"] {
   width: 80px;
 }
-select.chosen {
-  width: 100%;
+#page tr td:first-child {
+  min-width: 300px;
+  vertical-align: top;
+  text-align: right;
+}
+
+tr td input[type="checkbox"],
+tr td input[type="radio"] {
+  margin: 6px 0;
+}
+
+.tab-pane td:first-child {
+  padding-right: 1rem;
+  text-align: right;
+}
+
+#content {
+  padding-top: 0.5rem;
+}
+
+#contentForm {
+  height: 100%;
+  overflow: visible;
+}
+
+body.sticky #content {
+  overflow-y: auto;
+  height: 100%;
+}
+
+nav ul.nav {
+  height: 100%;
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+
+ul.form > li {
+  text-align: left;
+  padding-left: 300px;
+  margin: 10px 0;
+}
+
+ul.form > li > label:first-child {
+  width: 290px;
+  margin-left: -300px;
+  text-align: right;
+}
+
+nav #pills-tab a.nav-link {
+  margin-top: -0.5em;
+  margin-bottom: -0.5em;
+}
+
+nav #pills-tab .nav-item.form-control-sm {
+  height: auto;
+}
+
+nav #pills-tab a.nav-link.active {
+  background-color: var(--colorBackgroundButtons);
+  border: 1px #ccc solid;
+}
+
+/* The label is inline-block next to its field, so it lines up with the bottom
+ * of a field taller than one row - the textareas, and the chosen container the
+ * Groups multi-select is replaced by. They all want their label at the top. */
+.EncoderParameters label,
+.Notes label,
+.SourceOptions label,
+.Groups label {
+  vertical-align: top;
+}
+
+@media screen and (max-width:767px) {
+  #content {
+    display: block;
+  }
+  #pills-tab {
+    justify-content: center;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  ul.form > li {
+    padding-left: 0;
+    margin: 5px 0;
+  }
+  ul.form > li > label:first-child {
+    width: 100%;
+    margin-left: 0;
+    text-align: left;
+  }
+  #page tr td:first-child {
+    min-width: unset;
+  }
+  .tab-pane td:first-child {
+    text-align: left;
+  }
+  textarea,
+  input[name="newMonitor[ONVIF_URL]"],
+  input[name="newMonitor[ONVIF_Username]"],
+  input[name="newMonitor[ONVIF_Password]"],
+  input[name="newMonitor[LabelFormat]"] {
+    min-width: unset;
+  }
+}
+
+/* Encoder preset diagnostics — advisory text under the EncoderParameters textarea */
+.encoderParameterDiagnostics {
+  font-size: 0.9em;
+  color: #b58900;
+  margin-top: 4px;
 }

@@ -1,97 +1,170 @@
 #layout {
-    margin-right: 10px;
+  margin-right: 10px;
 }
 
-#content {
-  /*
-    width: 99%;
-    */
-}
-
-#monitors:after {
-  content: ".";
-  display: block;
-  height: 0;
-  font-size: 0;
-  clear: both;
-  visibility: hidden;
-}
-
-#monitors .monitor {
-  min-width: 180px;
-  margin: 0;
-  padding: 0;
-  border-radius: 0;
-}
-
-#monitors .alarm {
-    color: #ff0000;
-    border: none;
-}
-
-#monitors .alert {
-    color: #ffa500;
-    margin: 0;
-    padding: 0;
-    border-radius: 0;
-    border: none;
+#monitors {
+  height: 100%;
 }
 
 #monitors .imageFeed {
-    text-align: center;
-    vertical-align: middle;
+  /*overflow: auto;*/ /* When trying to use the OLD Scale algorithm */
+  overflow: hidden; /* When trying to use the NEW Scale algorithm */
+}
+.grid-stack > .grid-stack-item > .grid-stack-item-content {
+  overflow: hidden; /* When trying to use the NEW Scale algorithm */
+}
+
+.monitor .imageFeed {
+  border: 2px solid #999999;
+}
+
+#monitors .grid-stack-item .imageFeed img ,
+#monitors .grid-stack-item .imageFeed video ,
+#monitors .grid-stack-item .imageFeed video-stream ,
+#monitors .grid-stack-item .imageFeed svg {
+  border: none;
+  display: inline-block;
+  width: 100%;
+  height: 100%;
+}
+
+.modeEditingMonitor {
+  border: red solid;
+}
+
+.monitorStream {
   position: relative;
+  display: grid;
 }
 
-#monitors .imageFeed img,
-#monitors .imageFeed svg {
-    border: 2px solid #ffffff;
-    margin: 0;
-    padding: 0;
-    border-radius: 0;
-    display: block;
+.monitorStream .button_zoom,
+.monitorStream .zoompan {
+  grid-area: 1/1;
 }
 
-#monitors .imageFeed img.idle {
-    border: 2px solid #ffffff;
+.monitorStream, .monitor {
 }
 
-#monitors .imageFeed img.alarm {
-    border: 2px solid #ff0000;
+#monitors .monitorStatus {
+  margin: 2px auto;
+  text-align: center;
+  border: 0;
+  padding: 0;
+  min-height: 16px;
 }
 
-#monitors .imageFeed img.alert {
-    border: 2px solid #ffa500;
+#monitors .monitorStatus.bottom {
+  background-color: rgba(0,0,0,0.5);
+  position: absolute;
+  width: calc(100% - 4px);
+  margin: 2px;
+  bottom: 0;
 }
 
-#monitors .monitorState {
-    margin: 2px auto;
-    text-align: center;
-    border: 0;
-    padding: 0;
-    min-height: 16px;
-}
-#monitors .alert .monitorState {
-    border: 0;
+#monitors .alert .monitorStatus {
+  border: 0;
 }
 
 .zones polygon {
   fill-opacity: 0.25;
+  /* The svg is 100x100 stretched to the tile with preserveAspectRatio="none",
+     so a stroke in user units scales up and unevenly. Keep it 1 device pixel. */
+  vector-effect: non-scaling-stroke;
 }
+
+/* The overlay covers the whole tile, so without this it swallows the clicks
+   that drive zoom, pan and open-watch on the stream underneath. */
+#monitors svg.zones {
+  pointer-events: none;
+}
+
+/* Zone overlays are always rendered so toggleZones can show them without a
+   page reload. This hides them until the Show Zones button is pressed. */
+#monitors.hide-zones svg.zones {
+  display: none;
+}
+
 .Active {
   stroke: #ff0000;
   fill: #ff0000;
 }
+
 .Inclusive {
   stroke: #FFA500;
   fill: #FFA500;
 }
+
 .Exclusive {
   stroke: #800080;
   fill: #800080;
 }
+
 .Preclusive {
   stroke: #0000FF;
   fill: #0000FF;
 }
 
+.ratioControl{
+  padding: 0;
+  background-color: rgba(150,150,150,0.5);
+  position: absolute;
+  right: 2px;
+  top: 45px;
+  z-index: 5;
+}
+
+.grid-monitor .ratioControl, .grid-monitor .ratioControl select {
+  min-width: 130px;
+}
+
+.grid-stack-item-content.modeEditingMonitor {
+  cursor: crosshair;
+}
+
+/* Compact montage header: filters + settings */
+#mfbpanel .controlHeader {
+  justify-content: flex-start;
+  gap: 2px 4px;
+}
+
+#mfbpanel .controlHeader .term {
+  flex-direction: row;
+  align-items: center;
+  margin-left: 0;
+  margin-right: 4px;
+}
+
+#mfbpanel .controlHeader .term label {
+  margin: 0 4px 0 0;
+  white-space: nowrap;
+}
+
+#mfbpanel .controlHeader input[type="text"] {
+  width: 140px;
+}
+
+#mfbpanel .controlHeader .chosen-container {
+  min-width: 7em;
+}
+
+#sizeControl form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+#sizeControl form > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+#sizeControl form > span > label {
+  margin: 0;
+}
+
+#sizeControl .chosen-container {
+  min-width: 6em !important;
+}

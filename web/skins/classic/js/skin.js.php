@@ -23,26 +23,53 @@
 // Static JavaScript should go in skin.js
 //
 
+global $user;
 ?>
-var AJAX_TIMEOUT = <?php echo ZM_WEB_AJAX_TIMEOUT ?>;
+const ZM_WEB_VIEWING_TIMEOUT=<?php echo (ZM_WEB_VIEWING_TIMEOUT==''?'0':ZM_WEB_VIEWING_TIMEOUT)?>;
+const AJAX_TIMEOUT = <?php echo ZM_WEB_AJAX_TIMEOUT ?>;
+const navBarRefresh = <?php echo 1000*ZM_WEB_REFRESH_NAVBAR ?>;
+const currentView = '<?php echo $view ?>';
+const homeView = '<?php echo getHomeView() ?>';
+const navbar_type = '<?php echo $navbar_type ?>';
+const filter_settings_position = '<?php echo defined('ZM_WEB_FILTER_SETTINGS_POSITION') ? ZM_WEB_FILTER_SETTINGS_POSITION : 'sidebar' ?>';
 
-var navBarRefresh = <?php echo 1000*ZM_WEB_REFRESH_NAVBAR ?>;
-
-var currentView = '<?php echo $view ?>';
+const exportProgressString = '<?php echo addslashes(translate('Exporting')) ?>';
+const exportFailedString = '<?php echo translate('ExportFailed') ?>';
+const exportSucceededString = '<?php echo translate('ExportSucceeded') ?>';
+const cancelString = '<?php echo translate('Cancel') ?>';
+const playerDisabledInMonitorSettings = '<?php echo translate('PlayerDisabledInMonitorSettings') ?>';
 <?php
 /* We can't trust PHP_SELF on a path like /index.php/"%3E%3Cimg src=x onerror=prompt('1');%3E which
    will still load index.php but will include the arbitrary payload after `.php/`. To mitigate this,
    try to avoid using PHP_SELF but here I try to replace everything after '.php'. */ ?>
-var thisUrl = '<?php echo ZM_BASE_URL.preg_replace('/\.php.*$/i', '.php', $_SERVER['PHP_SELF']) ?>';
-var skinPath = '<?php echo ZM_SKIN_PATH ?>';
-var serverId = '<?php echo defined('ZM_SERVER_ID') ? ZM_SERVER_ID : '' ?>';
+const thisUrl = '<?php echo preg_replace('/\.php.*$/i', '.php', $_SERVER['PHP_SELF']) ?>';
+const skinPath = '<?php echo ZM_SKIN_PATH ?>';
+const serverId = <?php echo defined('ZM_SERVER_ID') ? ZM_SERVER_ID : '0' ?>;
+const Servers = [];
+<?php
+// Fall back to get Server paths, etc when no using multi-server mode
+$Server = new ZM\Server();
+echo 'Servers[0] = new Server(' . $Server->to_json(). ");\n";
+global $Servers;
+foreach ( $Servers as $Server ) {
+  echo 'Servers[' . $Server->Id() . '] = new Server(' . $Server->to_json(). ");\n";
+}
+?>
 
-var canEditSystem = <?php echo canEdit('System')?'true':'false' ?>;
-var canViewSystem = <?php echo canView('System')?'true':'false' ?>;
-var canEditEvents = <?php echo canEdit('Events')?'true':'false' ?>;
-var canViewEvents = <?php echo canView('Events')?'true':'false' ?>;
+const canView = {};
+const canEdit = {};
+<?php
+$perms = array('Stream', 'Events', 'Control', 'Monitors', 'Groups', 'Snapshots', 'System', 'Devices');
+foreach ( $perms as $perm ) {
+?>
+  canView["<?php echo $perm ?>"] = <?php echo canView($perm)?'true':'false' ?>;
+  canEdit["<?php echo $perm ?>"] = <?php echo canEdit($perm)?'true':'false' ?>;
+<?php
+}
+?>
 
-var canEditGroups = <?php echo canEdit('Groups')?'true':'false' ?>;
+const ANIMATE_THUMBS = <?php echo ZM_WEB_ANIMATE_THUMBS?'true':'false' ?>;
+const SCALE_BASE = <?php echo SCALE_BASE ?>;
 
 var refreshParent = <?php
 if ( ! empty($refreshParent) ) {
@@ -50,7 +77,7 @@ if ( ! empty($refreshParent) ) {
     echo 'true';
   } else if ( $refreshParent ) {
     # This is to tell the parent to refresh to a specific URL
-    echo "'$refreshParent'";
+    echo '\''.$refreshParent.'\'';
   } else {
     echo 'false';
   }
@@ -68,7 +95,69 @@ if ( ( ! empty($closePopup) ) and ( $closePopup == true ) ) {
 
 var focusWindow = <?php echo !empty($focusWindow)?'true':'false' ?>;
 
-var imagePrefix = "<?php echo '?view=image&eid=' ?>";
+const imagePrefix = '<?php echo '?view=image&eid=' ?>';
 
-var auth_hash = '<?php echo generateAuthHash(ZM_AUTH_HASH_IPS) ?>';
-var auth_relay = '<?php echo get_auth_relay() ?>';
+// The page's one copy of the authentication credential. ZMAuth derives the bare
+// hash from the relay, so the two can never disagree; see web/js/auth-helpers.js.
+var zmAuth = new ZMAuth('<?php echo get_auth_relay() ?>');
+var user = <?php echo $user ? json_encode($user->expose(['Password'])) : '{}'; ?>;
+var running = <?php echo daemonCheck()?'true':'false' ?>;
+
+const STATE_UNKNOWN = <?php echo STATE_UNKNOWN ?>;
+const STATE_IDLE = <?php echo STATE_IDLE ?>;
+const STATE_PREALARM = <?php echo STATE_PREALARM ?>;
+const STATE_ALARM = <?php echo STATE_ALARM ?>;
+const STATE_ALERT = <?php echo STATE_ALERT ?>;
+
+const ANALYSING_NONE = <?php echo ANALYSING_NONE ?>;
+const ANALYSING_ALWAYS = <?php echo ANALYSING_ALWAYS ?>;
+
+const CMD_ANALYZE_ON = <?php echo CMD_ANALYZE_ON ?>;
+const CMD_ANALYZE_OFF = <?php echo CMD_ANALYZE_OFF ?>;
+const CMD_NONE = <?php echo CMD_NONE ?>;
+const CMD_PAUSE = <?php echo CMD_PAUSE ?>;
+const CMD_PLAY = <?php echo CMD_PLAY ?>;
+const CMD_VARPLAY = <?php echo CMD_VARPLAY ?>;
+const CMD_STOP = <?php echo CMD_STOP ?>;
+const CMD_FASTFWD = <?php echo CMD_FASTFWD ?>;
+const CMD_SLOWFWD = <?php echo CMD_SLOWFWD ?>;
+const CMD_SLOWREV = <?php echo CMD_SLOWREV ?>;
+const CMD_FASTREV = <?php echo CMD_FASTREV ?>;
+const CMD_ZOOMIN = <?php echo CMD_ZOOMIN ?>;
+const CMD_ZOOMOUT = <?php echo CMD_ZOOMOUT ?>;
+const CMD_ZOOMSTOP = <?php echo CMD_ZOOMSTOP ?>;
+const CMD_PAN = <?php echo CMD_PAN ?>;
+const CMD_SCALE = <?php echo CMD_SCALE ?>;
+const CMD_PREV = <?php echo CMD_PREV ?>;
+const CMD_NEXT = <?php echo CMD_NEXT ?>;
+const CMD_SEEK = <?php echo CMD_SEEK ?>;
+const CMD_QUERY = <?php echo CMD_QUERY ?>;
+const CMD_QUIT = <?php echo CMD_QUIT ?>;
+const CMD_MAXFPS = <?php echo CMD_MAXFPS ?>;
+const AUDIO_MOTION_ENABLED = "<?php echo (AUDIO_MOTION_ENABLED) ? 'true' : 'false' ?>";
+
+const stateStrings = new Array();
+stateStrings[STATE_UNKNOWN] = "<?php echo translate('Unknown') ?>";
+stateStrings[STATE_IDLE] = "<?php echo translate('Idle') ?>";
+stateStrings[STATE_PREALARM] = "<?php echo translate('Prealarm') ?>";
+stateStrings[STATE_ALARM] = "<?php echo translate('Alarm') ?>";
+stateStrings[STATE_ALERT] = "<?php echo translate('Alert') ?>";
+
+<?php
+global $user;
+if ($user) {
+  // Only include config if logged in or auth turned off. The login view doesn't require any config.
+  global $zm_config;
+  foreach ($zm_config as $name=>$c) {
+    if (empty($c['Private'])) {
+      if (empty($c['Value'])) {
+        echo 'const '. $name . ' = \'\';'.PHP_EOL;
+      } else if (isset($c['Type']) and $c['Type'] == 'integer' and $c['Value'] != '') {
+        echo 'const '. $name . ' = '.$c['Value'].';'.PHP_EOL;
+      } else {
+        echo 'const '. $name . ' = '.json_encode($c['Value']).';'.PHP_EOL;
+      }
+    }
+  }
+}
+?>

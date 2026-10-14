@@ -18,162 +18,324 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 
-$servers = ZM\Server::find(null, array('order'=>'lower(Name)'));
-$ServersById = array();
-foreach ( $servers as $S ) {
-  $ServersById[$S->Id()] = $S;
-}
-zm_session_start();
-foreach ( array('GroupId','Function','ServerId','StorageId','Status','MonitorId','MonitorName','Source') as $var ) {
-  if ( isset($_REQUEST[$var]) ) {
-    if ( $_REQUEST[$var] != '' ) {
-      $_SESSION[$var] = $_REQUEST[$var];
-    } else {
-      unset($_SESSION[$var]);
+// Helper function to get filter value from request or cookie
+// We get from request so that we can use bookmarks
+// Otherwise everything is done in js in cookies.
+function getFilterSelection($name) {
+  $selectedValue = '';
+  $cookieValue = '';
+  $cookieName = 'zmFilter_'.$name;
+
+  if (isset($_REQUEST[$name])) {
+    $selectedValue = $_REQUEST[$name];
+    $cookieValue = json_encode($selectedValue);
+    if (!isset($_COOKIE[$cookieName]) or ($_COOKIE[$cookieName] != $cookieValue)) {
+      zm_setcookie($cookieName, $cookieValue);
     }
-  } else if ( isset($_REQUEST['filtering']) ) {
-    unset($_SESSION[$var]);
+  } else if (isset($_COOKIE[$cookieName])) {
+    $cookieValue = $_COOKIE[$cookieName];
+    if ($cookieValue && $cookieValue !== '') {
+      // Try to decode JSON for array values
+      $decoded = json_decode($cookieValue, true);
+      $selectedValue = ($decoded !== null) ? $decoded : $cookieValue;
+    }
   }
-}
-session_write_close();
-
-$storage_areas = ZM\Storage::find();
-$StorageById = array();
-foreach ( $storage_areas as $S ) {
-  $StorageById[$S->Id()] = $S;
+  return $selectedValue;
 }
 
-$html =
+// Deleted monitors are hidden from every monitor listing, which leaves no way
+// to find one again after it has been deleted. 'Deleted' is therefore offered
+// as a pseudo status in the Status filter: on its own it lists only the deleted
+// monitors, alongside real statuses it adds them to that selection, and when it
+// is not selected the listing stays restricted to live monitors as before.
+//
+// Returns a single WHERE fragment covering both Deleted and Status, and appends
+// its bind values to $values. $statusColumn is the expression the caller uses
+// for the live status, which differs between callers.
+function monitorStatusFilterSql($statusFilter, &$values, $statusColumn) {
+  if ($statusFilter === '' or $statusFilter === null) {
+    $statuses = array();
+  } else {
+    $statuses = is_array($statusFilter) ? $statusFilter : array($statusFilter);
+  }
+  $include_deleted = in_array('Deleted', $statuses);
+  $statuses = array_values(array_diff($statuses, array('Deleted')));
+
+  if ($include_deleted and !count($statuses))
+    return 'M.`Deleted`=true';
+
+  $sql = 'M.`Deleted`=false';
+  if (count($statuses)) {
+    $sql .= ' AND '.$statusColumn.' IN ('.implode(',', array_fill(0, count($statuses), '?')).')';
+    $values = array_merge($values, $statuses);
+  }
+  return $include_deleted ? '('.$sql.' OR M.`Deleted`=true)' : $sql;
+}
+
+// Resolve the shared monitor-attribute filters (ServerId/StorageId/Status/
+// Capturing/Analysing/Recording/MonitorName/Source) to the set of viewable
+// monitor ids they select, so views that filter events (which have no such
+// columns) can constrain to those monitors. Returns null when no attribute
+// filter is active (meaning "all monitors" -> caller should not constrain).
+// Group and Monitor selection are handled as first-class event terms and are
+// intentionally excluded here. refs #4976
+function getFilteredMonitorIds() {
+  require_once('includes/Monitor.php');
+
+  $conditions = array();
+  $values = array();
+  foreach (array('ServerId', 'StorageId', 'Capturing', 'Analysing', 'Recording') as $filter) {
+    $filterValue = getFilterSelection($filter);
+    if ($filterValue === '' or $filterValue === array() or $filterValue === null)
+      continue;
+    $column = '`'.$filter.'`';
+    if (is_array($filterValue)) {
+      $conditions[] = $column.' IN ('.implode(',', array_map(function() {return '?';}, $filterValue)).')';
+      $values = array_merge($values, $filterValue);
+    } else {
+      $conditions[] = $column.'=?';
+      $values[] = $filterValue;
+    }
+  }
+  # See buildMonitorsFilters(): Function=None monitors have no Monitor_Status row.
+  # Appended last so the bind values stay in the same order as the conditions.
+  $statusFilter = getFilterSelection('Status');
+  $conditions[] = monitorStatusFilterSql($statusFilter, $values, "COALESCE(`Status`, 'NotRunning')");
+
+  $monitorNameFilter = getFilterSelection('MonitorName');
+  $sourceFilter = getFilterSelection('Source');
+
+  if (count($conditions) == 1 and !$statusFilter and !$monitorNameFilter and !$sourceFilter)
+    return null; // no attribute filter active -> all monitors
+
+  $sql = 'SELECT M.* FROM Monitors AS M
+    LEFT JOIN Monitor_Status AS S ON S.MonitorId=M.Id
+    WHERE '.implode(' AND ', $conditions);
+  $ids = array();
+  foreach (dbFetchAll($sql, null, $values) as $row) {
+    if (!visibleMonitor($row['Id']))
+      continue; // never widen visibility beyond what the user may view
+
+    if ($monitorNameFilter) {
+      $regexp = $monitorNameFilter;
+      if (!strpos($regexp, '/')) $regexp = '/'.$regexp.'/i';
+      if (@preg_match($regexp, '') === false) $regexp = '/'.preg_quote($monitorNameFilter, '/').'/i';
+      if (!@preg_match($regexp, $row['Name'])) continue;
+    }
+    if ($sourceFilter) {
+      $Monitor = new ZM\Monitor($row);
+      $regexp = $sourceFilter;
+      if (!preg_match("/^\/.+\/[a-z]*$/i", $regexp)) $regexp = '/'.$regexp.'/i';
+      if (@preg_match($regexp, '') !== false) {
+        if (!preg_match($regexp, $Monitor->Source()) and !preg_match($regexp, $Monitor->Path()))
+          continue;
+      }
+    }
+    $ids[] = $row['Id'];
+  }
+  return $ids;
+}
+
+function addFilterSelect($name, $options, $selectedValue=null) {
+  if ($selectedValue == null) $selectedValue = getFilterSelection($name);
+  
+  $html = '<span class="term '.$name.'Filter"><label>'.translate($name).'</label>';
+  $html .= '<span class="term-value-wrapper">';
+  $html .= htmlSelect($name.'[]', $options,
+    $selectedValue,
+      array(
+        'data-on-change-this'=>'monitorFilterOnChange',
+        'class'=>'chosen',
+        'multiple'=>'multiple',
+        'data-placeholder'=>'All',
+      )
+    );
+  $html .= addButtonResetForFilterSelect($name.'[]');
+  $html .= '</span>';
+  $html .= '</span>'.PHP_EOL;
+  return $html;
+}
+
+function addButtonResetForFilterSelect($nameSelect) {
+  if (isset($_COOKIE['zmUseOldMenuView']) and $_COOKIE["zmUseOldMenuView"] === 'true') {
+    $html = '';
+  } else {
+    $html = PHP_EOL . '
+      <span class="btn-term-remove-all">
+        <button type="button" name="clearAllBtn" data-on-click-this="resetSelectElement" data-select-target="'.$nameSelect.'">
+          <i class="material-icons">clear</i>
+          <span class="text"></span>
+        </button>
+      </span>' . PHP_EOL;
+  }
+  return $html;
+}
+
+function buildMonitorsFilters() {
+  global $user, $Servers, $view;
+  require_once('includes/Monitor.php');
+  
+
+  $storage_areas = ZM\Storage::find();
+  $StorageById = array();
+  foreach ($storage_areas as $S) {
+    $StorageById[$S->Id()] = $S;
+  }
+
+  $ServersById = array();
+  foreach ($Servers as $s) {
+    $ServersById[$s->Id()] = $s;
+  }
+
+  $html =
 '
 <div class="controlHeader">
+
   <!-- Used to submit the form with the enter key -->
-  <input type="submit" class="hide"/>
+  <input type="submit" class="d-none"/>
   <input type="hidden" name="filtering" value=""/>
 ';
+  $groupSql = '';
+  if (canView('Groups')) {
+    $GroupsById = array();
+    foreach (ZM\Group::find() as $G) {
+      $GroupsById[$G->Id()] = $G;
+    }
 
-$GroupsById = array();
-foreach ( ZM\Group::find() as $G ) {
-  $GroupsById[$G->Id()] = $G;
-}
-
-$groupSql = '';
-if ( count($GroupsById) ) {
-  $html .= '<span id="groupControl"><label>'. translate('Group') .'</label>';
-  # This will end up with the group_id of the deepest selection
-  $group_id = isset($_SESSION['GroupId']) ? $_SESSION['GroupId'] : null;
-  $html .= ZM\Group::get_group_dropdown();
-  $groupSql = ZM\Group::get_group_sql($group_id);
-  $html .= '</span>
-';
-}
-
-$selected_monitor_ids = isset($_SESSION['MonitorId']) ? $_SESSION['MonitorId'] : array();
-if ( !is_array($selected_monitor_ids) ) {
-  $selected_monitor_ids = array($selected_monitor_ids);
-}
-
-$conditions = array();
-$values = array();
-
-if ( $groupSql )
-  $conditions[] = $groupSql;
-foreach ( array('ServerId','StorageId','Status','Function') as $filter ) {
-  if ( isset($_SESSION[$filter]) ) {
-    if ( is_array($_SESSION[$filter]) ) {
-      $conditions[] = '`'.$filter . '` IN ('.implode(',', array_map(function(){return '?';}, $_SESSION[$filter])). ')';
-      $values = array_merge($values, $_SESSION[$filter]);
-    } else {
-      $conditions[] = '`'.$filter . '`=?';
-      $values[] = $_SESSION[$filter];
+    if (count($GroupsById)) {
+      $group_id = getFilterSelection('GroupId');
+      $html .= addFilterSelect('GroupId', ZM\Group::get_dropdown_options(), $group_id);
+      $groupSql = ZM\Group::get_group_sql($group_id);
     }
   }
-} # end foreach filter
 
-if ( !empty($user['MonitorIds']) ) {
-  $ids = explode(',', $user['MonitorIds']);
-  $conditions[] = 'M.Id IN ('.implode(',',array_map(function(){return '?';}, $ids)).')';
-  $values = array_merge($values, $ids);
-}
+  $selected_monitor_ids = getFilterSelection('MonitorId');
+  if (!$selected_monitor_ids) {
+    $selected_monitor_ids = array();
+  } else if (!is_array($selected_monitor_ids)) {
+    $selected_monitor_ids = array($selected_monitor_ids);
+  }
 
-$html .= '<span class="MonitorNameFilter"><label>'.translate('Name').'</label>';
-$html .= '<input type="text" name="MonitorName" value="'.(isset($_SESSION['MonitorName'])?validHtmlStr($_SESSION['MonitorName']):'').'" placeholder="text or regular expression"/>';
-$html .= '</span>
-';
+  $conditions = array();
+  $values = array();
 
-$Functions = array();
-foreach ( getEnumValues('Monitors', 'Function') as $optFunction ) {
-  $Functions[$optFunction] = translate('Fn'.$optFunction);
-}
+  if ( $groupSql )
+    $conditions[] = $groupSql;
+  foreach ( array('ServerId','StorageId','Capturing','Analysing','Recording') as $filter ) {
+    $filterValue = getFilterSelection($filter);
+    if ( $filterValue ) {
+      $column = '`'.$filter.'`';
+      if ( is_array($filterValue) ) {
+        $conditions[] = $column.' IN ('.implode(',', array_map(function(){return '?';}, $filterValue)).')';
+        $values = array_merge($values, $filterValue);
+      } else {
+        $conditions[] = $column.'=?';
+        $values[] = $filterValue;
+      }
+    }
+  } # end foreach filter
 
-$html .= '<span class="FunctionFilter"><label>'.translate('Function').'</label>';
-$html .= htmlSelect('Function[]', $Functions,
-  (isset($_SESSION['Function'])?$_SESSION['Function']:''),
-    array(
-      'data-on-change'=>'submitThisForm',
-      'class'=>'chosen',
-      'multiple'=>'multiple',
-      'data-placeholder'=>'All',
-    )
- );
-$html .= '</span>
-';
+  # Function=None monitors have no Monitor_Status row, so the LEFT JOIN leaves
+  # S.Status NULL. Treat a missing status as NotRunning so that filter matches
+  # them, mirroring the NULL->NotRunning coalesce used for display in console.php.
+  # This also carries the Deleted restriction - see monitorStatusFilterSql().
+  $conditions[] = monitorStatusFilterSql(getFilterSelection('Status'), $values, "COALESCE(`Status`, 'NotRunning')");
 
-if ( count($ServersById) > 1 ) {
-  $html .= '<span class="ServerFilter"><label>'. translate('Server').'</label>';
-  $html .= htmlSelect('ServerId[]', $ServersById,
-    (isset($_SESSION['ServerId'])?$_SESSION['ServerId']:''),
-    array(
-      'data-on-change'=>'submitThisForm',
-      'class'=>'chosen',
-      'multiple'=>'multiple',
-      'data-placeholder'=>'All',
-    )
-  );
-  $html .= '</span>
-';
-} # end if have Servers
+  if (count($user->unviewableMonitorIds()) ) {
+    $ids = $user->viewableMonitorIds();
+    $conditions[] = 'M.Id IN ('.implode(',',array_map(function(){return '?';}, $ids)).')';
+    $values = array_merge($values, $ids);
+  }
 
-if ( count($StorageById) > 1 ) {
-  $html .= '<span class="StorageFilter"><label>'.translate('Storage').'</label>';
-  $html .= htmlSelect('StorageId[]', $StorageById,
-    (isset($_SESSION['StorageId'])?$_SESSION['StorageId']:''),
-    array(
-      'data-on-change'=>'submitThisForm',
-      'class'=>'chosen',
-      'multiple'=>'multiple',
-      'data-placeholder'=>'All',
-    ) );
-  $html .= '</span>
-';
-} # end if have Storage Areas
+  $monitorNameValue = getFilterSelection('MonitorName');
+  $html .= '<span class="term MonitorNameFilter"><label>'.translate('Name').'</label>';
+  $html .= '<span class="term-value-wrapper">';
+  $html .= '<input type="text" name="MonitorName" value="'.($monitorNameValue ? validHtmlStr($monitorNameValue) : '').'" placeholder="'.translate('text or regular expression').'" data-on-input="monitorFilterOnChange"/></span>';
+  $html .= '</span>'.PHP_EOL;
 
-$html .= '<span class="StatusFilter"><label>'.translate('Status').'</label>';
-$status_options = array(
+  $html .= addFilterSelect('Capturing', ['None'=>translate('None'), 'Always'=>translate('Always'), 'OnDemand'=>translate('On Demand')]);
+  $html .= addFilterSelect('Analysing', ['None'=>translate('None'), 'Always'=>translate('Always')]);
+  $html .= addFilterSelect('Recording', ['None'=>translate('None'), 'OnMotion'=>translate('On Motion'),'Always'=>translate('Always')]);
+
+  if ( count($ServersById) > 1 ) {
+    $html .= '<span class="term ServerFilter"><label>'. translate('Server').'</label>';
+    $html .= '<span class="term-value-wrapper">';
+    $html .= htmlSelect('ServerId[]', $ServersById,
+      getFilterSelection('ServerId') ?: '',
+      array(
+        'data-on-change-this'=>'monitorFilterOnChange',
+        'class'=>'chosen',
+        'multiple'=>'multiple',
+        'data-placeholder'=>'All',
+      )
+    );
+    $html .= addButtonResetForFilterSelect('ServerId[]');
+    $html .= '</span>';
+    $html .= '</span>';
+  } # end if have Servers
+
+  if ( count($StorageById) > 1 ) {
+    $html .= '<span class="term StorageFilter"><label>'.translate('Storage').'</label>';
+    $html .= '<span class="term-value-wrapper">';
+    $html .= htmlSelect('StorageId[]', $StorageById,
+      getFilterSelection('StorageId') ?: '',
+      array(
+        'data-on-change-this'=>'monitorFilterOnChange',
+        'class'=>'chosen',
+        'multiple'=>'multiple',
+        'data-placeholder'=>'All',
+      ) );
+    $html .= addButtonResetForFilterSelect('StorageId[]');
+    $html .= '</span>';
+    $html .= '</span>';
+  } # end if have Storage Areas
+
+  $html .= '<span class="term StatusFilter"><label>'.translate('Status').'</label>';
+  $status_options = array(
     'Unknown' => translate('StatusUnknown'),
     'NotRunning' => translate('StatusNotRunning'),
     'Running' => translate('StatusRunning'),
     'Connected' => translate('StatusConnected'),
+    'Deleted' => translate('StatusDeleted'),
     );
-$html .= htmlSelect( 'Status[]', $status_options,
-  ( isset($_SESSION['Status']) ? $_SESSION['Status'] : '' ),
-  array(
-    'data-on-change'=>'submitThisForm',
-    'class'=>'chosen',
-    'multiple'=>'multiple',
-    'data-placeholder'=>'All'
-  ) );
-$html .= '</span>
-';
+  $html .= '<span class="term-value-wrapper">';
+  $html .= htmlSelect( 'Status[]', $status_options,
+    getFilterSelection('Status') ?: '',
+    array(
+      'data-on-change-this'=>'monitorFilterOnChange',
+      'class'=>'chosen',
+      'multiple'=>'multiple',
+      'data-placeholder'=>'All'
+    ) );
+  $html .= addButtonResetForFilterSelect('Status[]');
+  $html .= '</span>';
+  $html .= '</span>';
 
-  $html .= '<span class="SourceFilter"><label>'.translate('Source').'</label>';
-  $html .= '<input type="text" name="Source" value="'.(isset($_SESSION['Source'])?validHtmlStr($_SESSION['Source']):'').'" placeholder="text or regular expression"/>';
-  $html .= '</span>
-';
+  $sourceValue = getFilterSelection('Source');
+  $html .= '<span class="term SourceFilter"><label>'.translate('Source').'</label>';
+  $html .= '<span class="term-value-wrapper">';
+  $html .= '<input type="text" name="Source" value="'.($sourceValue ? validHtmlStr($sourceValue) : '').'" placeholder="'.translate('text or regular expression').'"/>';
+  $html .= '</span>';
+  $html .= '</span>';
 
-  $sql = 'SELECT *,S.Status AS Status, S.CaptureFPS AS CaptureFPS, S.AnalysisFPS AS AnalysisFPS, S.CaptureBandwidth AS CaptureBandwidth
-  FROM Monitors AS M LEFT JOIN Monitor_Status AS S ON MonitorId=Id ' .
-  ( count($conditions) ? ' WHERE ' . implode(' AND ', $conditions) : '' ).' ORDER BY Sequence ASC';
-  $monitors = dbFetchAll($sql, null, $values);
+  $sqlFrom = 'SELECT M.*, S.*, E.*
+    FROM Monitors AS M
+    LEFT JOIN Monitor_Status AS S ON S.MonitorId=M.Id
+    LEFT JOIN Event_Summaries AS E ON E.MonitorId=M.Id
+    WHERE ';
+  # The "all available" count is what the filters are counted against, so it
+  # stays restricted to live monitors however the Status filter is set.
+  $sqlAll = $sqlFrom.'M.`Deleted`=false';
+  $sqlSelected = $sqlFrom . implode(' AND ', $conditions).' ORDER BY Sequence ASC';
+  $monitors = dbFetchAll($sqlSelected, null, $values);
+
+  $colAllAvailableMonitors = 0;
+  foreach ( dbFetchAll($sqlAll) as $row ) {
+    if ( visibleMonitor($row['Id']) ) { #We count only available monitors.
+      ++$colAllAvailableMonitors;
+    }
+  }
+  
   $displayMonitors = array();
   $monitors_dropdown = array();
 
@@ -196,39 +358,48 @@ $html .= '</span>
 
   for ( $i = 0; $i < count($monitors); $i++ ) {
     if ( !visibleMonitor($monitors[$i]['Id']) ) {
-      ZM\Logger::Warning('Monitor '.$monitors[$i]['Id'].' is not visible');
+      #ZM\Debug('Monitor '.$monitors[$i]['Id'].' is not visible');
       continue;
     }
 
-    if ( isset($_SESSION['MonitorName']) ) {
+    $monitorNameFilter = getFilterSelection('MonitorName');
+    if ( $monitorNameFilter ) {
       $Monitor = new ZM\Monitor($monitors[$i]);
       ini_set('track_errors', 'on');
       $php_errormsg = '';
-      $regexp = $_SESSION['MonitorName'];
+      $regexp = $monitorNameFilter;
+      if (!strpos($regexp, '/')) $regexp = '/'.$regexp.'/i';
 
       @preg_match($regexp, '');
       if ( $php_errormsg ) {
         $regexp = '/'.preg_quote($regexp,'/').'/i';
       }
 
-      if ( !preg_match($regexp, $Monitor->Name()) ) {
+      if ( !@preg_match($regexp, $Monitor->Name()) ) {
         continue;
       }
     }
 
-    if ( isset($_SESSION['Source']) ) {
+    $sourceFilter = getFilterSelection('Source');
+    if ( $sourceFilter ) {
       $Monitor = new ZM\Monitor($monitors[$i]);
       ini_set('track_errors', 'on');
       $php_errormsg = '';
-      $regexp = $_SESSION['Source'];
+      $regexp = $sourceFilter;
+
+      if (!preg_match("/^\/.+\/[a-z]*$/i",$regexp))
+        $regexp = '/'.$regexp.'/i';
 
       @preg_match($regexp, '');
       if ( $php_errormsg ) {
-        $regexp = '/'.preg_quote($regexp,'/').'/i';
-      }
-      if ( !preg_match($regexp, $Monitor->Source()) ) {
-        if ( !preg_match($regexp, $Monitor->Path()) ) {
-          continue;
+        ZM\Warning($sourceFilter.' is not a valid search string');
+      } else {
+        ZM\Debug("Using $regexp for source");
+        if ( !preg_match($regexp, $Monitor->Source()) ) {
+          ZM\Debug("Source didn't match $regexp ".$Monitor->Source());
+          if ( !preg_match($regexp, $Monitor->Path()) ) {
+            continue;
+          }
         }
       }
     }
@@ -240,19 +411,38 @@ $html .= '</span>
     }
     $displayMonitors[] = $monitors[$i];
   } # end foreach monitor
-
-  $html .= '<span class="MonitorFilter"><label>'.translate('Monitor').'</label>';
-  $html .= htmlSelect('MonitorId[]', $monitors_dropdown, $selected_monitor_ids,
+  # Built into its own string as well as appended, so a caller can place the
+  # resulting selection somewhere other than beside the attributes that produced
+  # it. See monitorSelect and filterBarWithoutMonitor in the return below.
+  $monitor_select_html = '<span class="term MonitorFilter"><label>'.translate('Monitor').'</label>';
+  $monitor_select_html .= '<span class="term-value-wrapper">';
+  $monitor_select_html .= htmlSelect('MonitorId[]', $monitors_dropdown, $selected_monitor_ids,
     array(
-      'data-on-change'=>'submitThisForm',
+      'data-on-change-this'=>'monitorFilterOnChange',
       'class'=>'chosen',
       'multiple'=>'multiple',
       'data-placeholder'=>'All',
     ) );
+  $monitor_select_html .= addButtonResetForFilterSelect('MonitorId[]');
+  $monitor_select_html .= '</span>';
+  $monitor_select_html .= '</span>';
+  $html .= $monitor_select_html;
   # Repurpose this variable to be the list of MonitorIds as a result of all the filtering
-  $selected_monitor_ids = array_map(function($monitor_row){return $monitor_row['Id'];}, $displayMonitors);
-  $html .= '</span>
-';
-  echo $html;
+  $display_monitor_ids = array_map(function($monitor_row){return $monitor_row['Id'];}, $displayMonitors);
+
+  $html .= '</div>';
+
+  return [
+    "filterBar" => $html,
+    // The monitor selection on its own, and the attribute filters without it.
+    // Both are slices of filterBar, which is unchanged for existing callers.
+    "monitorSelect" => $monitor_select_html,
+    "filterBarWithoutMonitor" => str_replace($monitor_select_html, '', $html),
+    "displayMonitors" => $displayMonitors,
+    "storage_areas" => $storage_areas, //Console page
+    "StorageById" => $StorageById, //Console page
+    "colAllAvailableMonitors" => $colAllAvailableMonitors, //Console page
+    "selected_monitor_ids" => $selected_monitor_ids
+  ];
+}
 ?>
-</div>

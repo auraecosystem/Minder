@@ -1,36 +1,62 @@
+// Manage the NEW Group button
 function newGroup() {
-  createPopup( '?view=group', 'zmGroup', 'group' );
+  $j('#groupModal').remove();
+  $j.getJSON(thisUrl + '?request=modal&modal=group')
+      .done(function(data) {
+        insertModalHtml('groupdModal', data.html);
+        $j('#groupModal').modal('show');
+        $j('#newGroupMonitorIds').chosen({width: "100%"});
+      })
+      .fail(logAjaxFail);
 }
 
 function setGroup( element ) {
-  var form = element.form;
+  const form = element.form;
   form.action.value = 'setgroup';
   form.submit();
 }
 
 function editGroup( element ) {
-  var gid = element.getAttribute('data-group-id');
+  const gid = element.getAttribute('data-group-id');
   if ( !gid ) {
     console.log('No group id found in editGroup');
   } else {
-    createPopup('?view=group&gid='+gid, 'zmGroup'+gid, 'group');
+    $j('#groupModal').remove();
+    $j.getJSON(thisUrl + '?request=modal&modal=group&gid=' + gid)
+        .done(function(data) {
+          insertModalHtml('groupModal', data.html);
+          $j('#groupModal').modal('show');
+          $j('#newGroupMonitorIds').chosen({width: "100%"});
+        })
+        .fail(logAjaxFail);
   }
 }
 
-function deleteGroup( element ) {
-  var form = element.form;
-  form.view.value = currentView;
-  form.action.value = 'delete';
-  form.submit();
+function deleteGroup(element) {
+  getDelConfirmModal('ConfirmDeleteGroups', 'Delete', 'groupsForm');
 }
 
-function configureButtons( element ) {
-  if ( canEditGroups ) {
-    var form = element.form;
-    if ( element.checked ) {
-      form.deleteBtn.disabled = (element.value == 0);
-    }
+function configureButtons(element) {
+  if (canEdit.Groups) {
+    configureDeleteButton(element);
+  } else {
+    const form = element.form;
+    if (form) form.deleteBtn.disabled = true;
   }
 }
 
-window.focus();
+function configModalBtns() {
+  const form = document.getElementById('groupForm');
+  if (!form) {
+    console.error("No groupForm found");
+    return;
+  }
+  if (!canEdit.Groups) {
+    console.log("Cannot edit groups");
+    form.elements['action'].disabled = true;
+    return;
+  }
+  if (form.elements['newGroup[Name]'].value == '') {
+    form.elements['action'].disabled = true;
+  }
+}

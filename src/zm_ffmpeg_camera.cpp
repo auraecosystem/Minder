@@ -17,320 +17,411 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 
-#include "zm.h"
-#include "zm_signal.h"
-#include "zm_utils.h"
-
-#if HAVE_LIBAVFORMAT
-
 #include "zm_ffmpeg_camera.h"
 
+#include "zm_ffmpeg_input.h"
+#include "zm_monitor.h"
+#include "zm_packet.h"
+#include "zm_signal.h"
+#include "zm_utils.h"
+#include "url.hpp"
+
+#include <thread>
+#include <vector>
+
 extern "C" {
-#include "libavutil/time.h"
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-  #include "libavutil/hwcontext.h"
-#endif
-#include "libavutil/pixdesc.h"
+#include <libavutil/time.h>
+#include <libavdevice/avdevice.h>
 }
-#ifndef AV_ERROR_MAX_STRING_SIZE
-#define AV_ERROR_MAX_STRING_SIZE 64
-#endif
 
-#include <string>
-
-
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
-static enum AVPixelFormat hw_pix_fmt;
-static enum AVPixelFormat get_hw_format(
-    AVCodecContext *ctx,
-    const enum AVPixelFormat *pix_fmts
-) {
-  const enum AVPixelFormat *p;
-
-  for ( p = pix_fmts; *p != -1; p++ ) {
-    if ( *p == hw_pix_fmt )
-      return *p;
-  }
-
-  Error("Failed to get HW surface format for %s.",
-      av_get_pix_fmt_name(hw_pix_fmt));
-  for ( p = pix_fmts; *p != -1; p++ )
-    Error("Available HW surface format was %s.",
-        av_get_pix_fmt_name(*p));
-
-  return AV_PIX_FMT_NONE;
-}
-#if !LIBAVUTIL_VERSION_CHECK(56, 22, 0, 14, 0)
-static enum AVPixelFormat find_fmt_by_hw_type(const enum AVHWDeviceType type) {
-  enum AVPixelFormat fmt;
-  switch (type) {
-    case AV_HWDEVICE_TYPE_VAAPI:
-      fmt = AV_PIX_FMT_VAAPI;
-      break;
-    case AV_HWDEVICE_TYPE_DXVA2:
-      fmt = AV_PIX_FMT_DXVA2_VLD;
-      break;
-    case AV_HWDEVICE_TYPE_D3D11VA:
-      fmt = AV_PIX_FMT_D3D11;
-      break;
-    case AV_HWDEVICE_TYPE_VDPAU:
-      fmt = AV_PIX_FMT_VDPAU;
-      break;
-    case AV_HWDEVICE_TYPE_CUDA:
-      fmt = AV_PIX_FMT_CUDA;
-      break;
-    case AV_HWDEVICE_TYPE_VIDEOTOOLBOX:
-      fmt = AV_PIX_FMT_VIDEOTOOLBOX;
-      break;
-    default:
-      fmt = AV_PIX_FMT_NONE;
-      break;
-  }
-  return fmt;
-}
-#endif
-#endif
-#endif
+TimePoint start_read_time;
 
 FfmpegCamera::FfmpegCamera(
-    int p_id,
-    const std::string &p_path,
-    const std::string &p_method,
-    const std::string &p_options,
-    int p_width,
-    int p_height,
-    int p_colours,
-    int p_brightness,
-    int p_contrast,
-    int p_hue,
-    int p_colour,
-    bool p_capture,
-    bool p_record_audio,
-    const std::string &p_hwaccel_name,
-    const std::string &p_hwaccel_device) :
+  const Monitor *monitor,
+  const std::string &p_path,
+  const std::string &p_second_path,
+  const std::string &p_user,
+  const std::string &p_pass,
+  const std::string &p_method,
+  const std::string &p_options,
+  int p_width,
+  int p_height,
+  int p_colours,
+  int p_brightness,
+  int p_contrast,
+  int p_hue,
+  int p_colour,
+  bool p_capture,
+  bool p_record_audio,
+  const std::string &p_hwaccel_name,
+  const std::string &p_hwaccel_device) :
   Camera(
-      p_id,
-      FFMPEG_SRC,
-      p_width,
-      p_height,
-      p_colours,
-      ZM_SUBPIX_ORDER_DEFAULT_FOR_COLOUR(p_colours),
-      p_brightness,
-      p_contrast,
-      p_hue,
-      p_colour,
-      p_capture,
-      p_record_audio
-      ),
+    monitor,
+    FFMPEG_SRC,
+    p_width,
+    p_height,
+    p_colours,
+    ZM_SUBPIX_ORDER_DEFAULT_FOR_COLOUR(p_colours),
+    p_brightness,
+    p_contrast,
+    p_hue,
+    p_colour,
+    p_capture,
+    p_record_audio
+  ),
   mPath(p_path),
+  mSecondPath(p_second_path),
+  mUser(p_user),
+  mPass(p_pass),
   mMethod(p_method),
   mOptions(p_options),
   hwaccel_name(p_hwaccel_name),
-  hwaccel_device(p_hwaccel_device)
-{
+  hwaccel_device(p_hwaccel_device),
+  mSecondInput(nullptr),
+  frameCount(0),
+  use_hwaccel(true),
+  mConvertContext(nullptr),
+  error_count(0),
+  stream_width(0),
+  stream_height(0) {
+  mMaskedPath = remove_authentication(mPath);
+  mMaskedSecondPath = remove_authentication(mSecondPath);
+
+  mLoop = false;
+  mLoopVideoOffset = 0;
+  mLoopAudioOffset = 0;
+  mLoopVideoFrameDuration = 0;
+  mLoopAudioFrameDuration = 0;
+
+  mRealtime = false;
+  mRealtimeAnchored = false;
+  mRealtimeStartTS = 0;
+
   if ( capture ) {
-    Initialise();
+    FFMPEGInit();
   }
 
-  mFormatContext = NULL;
-  mVideoStreamId = -1;
-  mAudioStreamId = -1;
-  mVideoCodecContext = NULL;
-  mAudioCodecContext = NULL;
-  mVideoCodec = NULL;
-  mAudioCodec = NULL;
-  mRawFrame = NULL;
-  mFrame = NULL;
-  frameCount = 0;
-  mCanCapture = false;
-  videoStore = NULL;
-  have_video_keyframe = false;
-  packetqueue = NULL;
-  error_count = 0;
-  use_hwaccel = true;
 #if HAVE_LIBAVUTIL_HWCONTEXT_H
-  hwFrame = NULL;
-  hw_device_ctx = NULL;
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
+  hw_device_ctx = nullptr;
   hw_pix_fmt = AV_PIX_FMT_NONE;
 #endif
-#endif
 
-#if HAVE_LIBSWSCALE
-  mConvertContext = NULL;
-#endif
   /* Has to be located inside the constructor so other components such as zma
    * will receive correct colours and subpixel order */
-  if ( colours == ZM_COLOUR_RGB32 ) {
+  if ( zm_is_rgb32(pixelFormat) ) {
     subpixelorder = ZM_SUBPIX_ORDER_RGBA;
-    imagePixFormat = AV_PIX_FMT_RGBA;
-  } else if ( colours == ZM_COLOUR_RGB24 ) {
+    pixelFormat = AV_PIX_FMT_RGBA;
+  } else if ( zm_is_rgb24(pixelFormat) ) {
     subpixelorder = ZM_SUBPIX_ORDER_RGB;
-    imagePixFormat = AV_PIX_FMT_RGB24;
-  } else if ( colours == ZM_COLOUR_GRAY8 ) {
+    pixelFormat = AV_PIX_FMT_RGB24;
+  } else if ( pixelFormat == AV_PIX_FMT_GRAY8 ) {
     subpixelorder = ZM_SUBPIX_ORDER_NONE;
-    imagePixFormat = AV_PIX_FMT_GRAY8;
+    pixelFormat = AV_PIX_FMT_GRAY8;
   } else {
-    Panic("Unexpected colours: %d", colours);
+    Panic("Unexpected pixel format %d (%s); legacy colours=%d subpixelorder=%d",
+          pixelFormat, zm_get_pix_fmt_name(pixelFormat), colours, subpixelorder);
   }
 
-  // sws_scale needs 32bit aligned width and an extra 16 bytes padding, so recalculate imagesize, which was width*height*bytes_per_pixel
-#if LIBAVUTIL_VERSION_CHECK(54, 6, 0, 6, 0)
-  alignment = 32;
-  imagesize = av_image_get_buffer_size(imagePixFormat, width, height, alignment);
-  // av_image_get_linesize isn't aligned, so we have to do that.
-  linesize = FFALIGN(av_image_get_linesize(imagePixFormat, width, 0), alignment);
-#else
-  alignment = 1;
-  linesize = FFALIGN(av_image_get_linesize(imagePixFormat, width, 0), alignment);
-  imagesize = avpicture_get_size(imagePixFormat, width, height);
-#endif
-
-  Debug(1, "ffmpegcamera: width %d height %d linesize %d colours %d imagesize %d", width, height, linesize, colours, imagesize);
+  packet = av_packet_ptr{av_packet_alloc()};
 }  // FfmpegCamera::FfmpegCamera
 
 FfmpegCamera::~FfmpegCamera() {
   Close();
 
-  if ( capture ) {
-    Terminate();
-  }
   FFMPEGDeInit();
 }
 
-void FfmpegCamera::Initialise() {
-  FFMPEGInit();
-}
-
-void FfmpegCamera::Terminate() {
-}
-
 int FfmpegCamera::PrimeCapture() {
-  if ( mCanCapture ) {
-    Debug(1, "Priming capture from %s, Closing", mPath.c_str());
-    Close();
-  }
+  start_read_time = std::chrono::steady_clock::now();
+  Close();
   mVideoStreamId = -1;
   mAudioStreamId = -1;
-  Debug(1, "Priming capture from %s", mPath.c_str());
+  Debug(1, "Priming capture from %s", mMaskedPath.c_str());
 
   return OpenFfmpeg();
 }
 
 int FfmpegCamera::PreCapture() {
-  // If Reopen was called, then ffmpeg is closed and we need to reopen it.
-  if ( !mCanCapture )
-    return OpenFfmpeg();
-  // Nothing to do here
   return 0;
 }
 
-int FfmpegCamera::Capture(Image &image) {
-  if ( !mCanCapture ) {
-    return -1;
+bool FfmpegCamera::loopSeekToStart(AVFormatContext *ctx) {
+  if (!(ctx->pb && ctx->pb->seekable)) {
+    Debug(1, "loop: input is not seekable, cannot loop");
+    return false;
   }
 
-  int ret;
-  // If the reopen thread has a value, but mCanCapture != 0, then we have just
-  // reopened the connection to the device, and we can clean up the thread.
+  // Bump the per-stream absolute offsets so the next packet continues one frame
+  // after the last emitted dts. mLastVideoDTS/mLastAudioDTS already include the
+  // offset that was in effect, and start_time is the raw container start, so
+  // this accumulates correctly across repeated loops.
+  // The audio stream lives in the secondary context only when one is in use;
+  // otherwise both streams share mFormatContext.
+  bool ctxHasVideo = (mVideoStream != nullptr) && (ctx == mFormatContext);
+  bool ctxHasAudio = (mAudioStream != nullptr) &&
+                     (ctx == (mSecondFormatContext ? mSecondFormatContext : mFormatContext));
 
-  int frameComplete = false;
-  while ( !frameComplete && !zm_terminate ) {
-    ret = av_read_frame(mFormatContext, &packet);
-    if ( ret < 0 ) {
+  if (ctxHasVideo && (mLastVideoDTS != AV_NOPTS_VALUE)) {
+    int64_t start = (mVideoStream->start_time != AV_NOPTS_VALUE) ? mVideoStream->start_time : 0;
+    mLoopVideoOffset = mLastVideoDTS + mLoopVideoFrameDuration - start;
+  }
+  if (ctxHasAudio && (mLastAudioDTS != AV_NOPTS_VALUE)) {
+    int64_t start = (mAudioStream->start_time != AV_NOPTS_VALUE) ? mAudioStream->start_time : 0;
+    mLoopAudioOffset = mLastAudioDTS + mLoopAudioFrameDuration - start;
+  }
+
+  int ret = avformat_seek_file(ctx, -1, INT64_MIN, 0, INT64_MAX, AVSEEK_FLAG_BACKWARD);
+  if (ret < 0) {
+    ret = av_seek_frame(ctx, -1, 0, AVSEEK_FLAG_BACKWARD);
+  }
+  if (ret < 0) {
+    Warning("loop: seek to start failed: %s", av_make_error_string(ret).c_str());
+    return false;
+  }
+  Debug(1, "loop: sought to start; offsets video=%" PRId64 " audio=%" PRId64,
+        mLoopVideoOffset, mLoopAudioOffset);
+  return true;
+}
+
+int FfmpegCamera::readFrameWithLoop(AVFormatContext *ctx, AVPacket *pkt) {
+  int ret = av_read_frame(ctx, pkt);
+  if (ret >= 0) return ret;
+
+  bool eof = (ret == AVERROR_EOF) || (ctx->pb && ctx->pb->eof_reached);
+  if (eof && mLoop && loopSeekToStart(ctx)) {
+    Info("loop: reached end of input, restarting from beginning");
+    ret = av_read_frame(ctx, pkt);
+  }
+  return ret;
+}
+
+RealtimePaceDecision ComputeRealtimePace(
+    int64_t ts_us, int64_t anchor_ts_us, Microseconds elapsed, Microseconds cap) {
+  // Backward movement (e.g. a discontinuity the jump checks let through):
+  // re-anchor so we never try to sleep on a negative delta.
+  if (ts_us < anchor_ts_us)
+    return {true, Microseconds(0)};
+
+  Microseconds target_elapsed(ts_us - anchor_ts_us);
+  Microseconds delay = target_elapsed - elapsed;
+
+  // Already behind schedule: deliver immediately.
+  if (delay <= Microseconds(0))
+    return {false, Microseconds(0)};
+
+  // A large gap usually means a timestamp discontinuity rather than a genuine
+  // multi-second frame interval; re-anchor instead of stalling the capture.
+  if (delay > cap)
+    return {true, Microseconds(0)};
+
+  return {false, delay};
+}
+
+void FfmpegCamera::paceRealtime(int64_t ts_us) {
+  if (!mRealtime || (ts_us == AV_NOPTS_VALUE)) return;
+
+  TimePoint now = std::chrono::steady_clock::now();
+
+  // Anchor on the first packet.
+  if (!mRealtimeAnchored) {
+    mRealtimeStartWall = now;
+    mRealtimeStartTS = ts_us;
+    mRealtimeAnchored = true;
+    return;
+  }
+
+  Microseconds elapsed = std::chrono::duration_cast<Microseconds>(now - mRealtimeStartWall);
+  RealtimePaceDecision d = ComputeRealtimePace(ts_us, mRealtimeStartTS, elapsed, Seconds(10));
+
+  if (d.reanchor) {
+    Debug(1, "realtime: re-anchoring pacing at ts %" PRId64 "us", ts_us);
+    mRealtimeStartWall = now;
+    mRealtimeStartTS = ts_us;
+    return;
+  }
+
+  if (d.sleep > Microseconds(0)) {
+    Debug(4, "realtime: sleeping %" PRId64 "us to pace to stream rate",
+          static_cast<int64_t>(d.sleep.count()));
+    std::this_thread::sleep_for(d.sleep);
+  }
+}
+
+int FfmpegCamera::Capture(std::shared_ptr<ZMPacket> &zm_packet) {
+  if (!mIsPrimed) return -1;
+
+  start_read_time = std::chrono::steady_clock::now();
+  int ret;
+  AVFormatContext *formatContextPtr;
+  int64_t lastPTS = -1;
+
+  if ( mSecondFormatContext and mAudioStream and
+       (
+         av_rescale_q(mLastAudioPTS, mAudioStream->time_base, AV_TIME_BASE_Q)
+         <
+         av_rescale_q(mLastVideoPTS, mVideoStream->time_base, AV_TIME_BASE_Q)
+       ) ) {
+    // if audio stream is behind video stream, then read from audio, otherwise video
+    formatContextPtr = mSecondFormatContext;
+    lastPTS = mLastAudioPTS;
+    Debug(4, "Using audio input because audio PTS %" PRId64 " < video PTS %" PRId64,
+          av_rescale_q(mLastAudioPTS, mAudioStream->time_base, AV_TIME_BASE_Q),
+          av_rescale_q(mLastVideoPTS, mVideoStream->time_base, AV_TIME_BASE_Q)
+         );
+    if ((ret = readFrameWithLoop(formatContextPtr, packet.get())) < 0) {
       if (
-          // Check if EOF.
-          (
-           ret == AVERROR_EOF
-           ||
-           (mFormatContext->pb && mFormatContext->pb->eof_reached)
-          ) ||
-          // Check for Connection failure.
-          (ret == -110)
-         ) {
+        // Check if EOF.
+        (ret == AVERROR_EOF || (formatContextPtr->pb && formatContextPtr->pb->eof_reached)) ||
+        // Check for Connection failure.
+        (ret == -110)
+      ) {
         Info("Unable to read packet from stream %d: error %d \"%s\".",
-            packet.stream_index, ret, av_make_error_string(ret).c_str());
+             packet->stream_index, ret, av_make_error_string(ret).c_str());
       } else {
-        Error("Unable to read packet from stream %d: error %d \"%s\".",
-            packet.stream_index, ret, av_make_error_string(ret).c_str());
+        logPrintf(Logger::ERROR + monitor->Importance(),
+            "Unable to read packet from stream %d: error %d \"%s\".",
+            packet->stream_index, ret, av_make_error_string(ret).c_str());
       }
       return -1;
     }
-    bytes += packet.size;
+  } else {
+    formatContextPtr = mFormatContext;
+    Debug(4, "Using video input because %" PRId64 " >= %" PRId64,
+          (mAudioStream?av_rescale_q(mLastAudioPTS, mAudioStream->time_base, AV_TIME_BASE_Q):0),
+          av_rescale_q(mLastVideoPTS, mVideoStream->time_base, AV_TIME_BASE_Q)
+         );
 
-    int keyframe = packet.flags & AV_PKT_FLAG_KEY;
-    if ( keyframe )
-      have_video_keyframe = true;
-
-    Debug(5, "Got packet from stream %d dts (%d) pts(%d)",
-        packet.stream_index, packet.pts, packet.dts);
-    // What about audio stream? Maybe someday we could do sound detection...
-    if (
-        (packet.stream_index == mVideoStreamId)
-        &&
-        (keyframe || have_video_keyframe)
-        ) {
-      ret = zm_send_packet_receive_frame(mVideoCodecContext, mRawFrame, packet);
-      if ( ret < 0 ) {
-        if ( AVERROR(EAGAIN) != ret ) {
-          Warning("Unable to receive frame %d: code %d %s. error count is %d",
-              frameCount, ret, av_make_error_string(ret).c_str(), error_count);
-          error_count += 1;
-          if ( error_count > 100 ) {
-            Error("Error count over 100, going to close and re-open stream");
-            return -1;
-          }
-        }
-        zm_av_packet_unref(&packet);
-        continue;
-      }
-
-      frameComplete = 1;
-      zm_dump_video_frame(mRawFrame, "raw frame from decoder");
-
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
+    if ((ret = readFrameWithLoop(formatContextPtr, packet.get())) < 0) {
       if (
-          (hw_pix_fmt != AV_PIX_FMT_NONE)
-          &&
-          (mRawFrame->format == hw_pix_fmt)
-         ) {
-        /* retrieve data from GPU to CPU */
-        ret = av_hwframe_transfer_data(hwFrame, mRawFrame, 0);
-        if ( ret < 0 ) {
-          Error("Unable to transfer frame at frame %d: %s, continuing",
-              frameCount, av_make_error_string(ret).c_str());
-          zm_av_packet_unref(&packet);
-          continue;
-        }
-        zm_dump_video_frame(hwFrame, "After hwtransfer");
-
-        hwFrame->pts = mRawFrame->pts;
-        input_frame = hwFrame;
+        // Check if EOF.
+        (ret == AVERROR_EOF || (formatContextPtr->pb && formatContextPtr->pb->eof_reached)) ||
+        // Check for Connection failure.
+        (ret == -110)
+      ) {
+        Info("Unable to read packet from stream %d: error %d \"%s\".",
+             packet->stream_index, ret, av_make_error_string(ret).c_str());
       } else {
-#endif
-#endif
-        input_frame = mRawFrame;
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
+        logPrintf(Logger::ERROR + monitor->Importance(),
+            "Unable to read packet from stream %d: error %d \"%s\".",
+            packet->stream_index, ret, av_make_error_string(ret).c_str());
       }
-#endif
-#endif
+      return -1;
+    }
 
-      if ( transfer_to_image(image, mFrame, input_frame) < 0 ) {
-        zm_av_packet_unref(&packet);
-        return -1;
-      }
-
-      frameCount++;
+    if ( packet->stream_index == mVideoStreamId) {
+      lastPTS = mLastVideoPTS;
+    } else if (packet->stream_index == mAudioStreamId) {
+      lastPTS = mLastAudioPTS;
     } else {
-      Debug(4, "Different stream_index %d", packet.stream_index);
-    }  // end if packet.stream_index == mVideoStreamId
-    zm_av_packet_unref(&packet);
-  }  // end while ! frameComplete
-  return frameComplete ? 1 : 0;
-}  // FfmpegCamera::Capture
+      Debug(1, "Have packet (%d) which isn't for video (%d) or audio stream (%d).", packet->stream_index, mVideoStreamId, mAudioStreamId);
+      return 0;
+    }
+  }
+
+  AVStream *stream = formatContextPtr->streams[packet->stream_index];
+
+  // Loop mode: shift this packet's timestamps by the accumulated per-stream
+  // offset so they stay monotonically increasing across loop restarts. Done
+  // before the pts/dts backward-jump checks and before the packet is queued, so
+  // every consumer (analysis, recording) sees continuous timestamps. Also keep
+  // the per-stream frame duration up to date for spacing the next loop.
+  if (mLoop) {
+    int64_t off = 0;
+    if (packet->stream_index == mVideoStreamId) {
+      off = mLoopVideoOffset;
+      if (packet->duration > 0) mLoopVideoFrameDuration = packet->duration;
+    } else if (packet->stream_index == mAudioStreamId) {
+      off = mLoopAudioOffset;
+      if (packet->duration > 0) mLoopAudioFrameDuration = packet->duration;
+    }
+    if (off) {
+      if (packet->pts != AV_NOPTS_VALUE) packet->pts += off;
+      if (packet->dts != AV_NOPTS_VALUE) packet->dts += off;
+    }
+  }
+
+  ZM_DUMP_STREAM_PACKET(stream, packet, "ffmpeg_camera in");
+
+  if ((packet->pts != AV_NOPTS_VALUE) and (lastPTS >= 0)) {
+    if (packet->pts < 0) {
+      // 32-bit wrap around?
+      Info("Suspected 32bit wraparound in input pts. %" PRId64, packet->pts);
+      return -1;
+    } else if (packet->pts - lastPTS < -10*stream->time_base.den) {
+      if (!monitor->WallClockTimestamps()) {
+        // -10 is for 10 seconds. Avigilon cameras seem to jump around by about 36 constantly
+        double pts_time = static_cast<double>(av_rescale_q(packet->pts, stream->time_base, AV_TIME_BASE_Q)) / AV_TIME_BASE;
+        double last_pts_time = static_cast<double>(av_rescale_q(lastPTS, stream->time_base, AV_TIME_BASE_Q)) / AV_TIME_BASE;
+        logPrintf(Logger::WARNING + monitor->Importance(), "Stream pts jumped back in time too far. pts %.2f - last pts %.2f = %.2f > 10seconds",
+                  pts_time, last_pts_time, pts_time - last_pts_time);
+      }
+      if (error_count > 5)
+        return -1;
+      error_count += 1;
+      return 0;
+    }
+  }
+
+  // Check DTS for significant backward jumps. Some cameras/encoders produce
+  // non-monotonic DTS (B-frames, stream restarts) that PTS checks won't catch.
+  if (packet->dts != AV_NOPTS_VALUE) {
+    int64_t lastDTS = (packet->stream_index == mVideoStreamId) ? mLastVideoDTS : mLastAudioDTS;
+    if (lastDTS != AV_NOPTS_VALUE) {
+      int64_t dts_delta = packet->dts - lastDTS;
+      if (dts_delta < -10*stream->time_base.den) {
+        double dts_time = static_cast<double>(av_rescale_q(packet->dts, stream->time_base, AV_TIME_BASE_Q)) / AV_TIME_BASE;
+        double last_dts_time = static_cast<double>(av_rescale_q(lastDTS, stream->time_base, AV_TIME_BASE_Q)) / AV_TIME_BASE;
+        logPrintf(Logger::WARNING + monitor->Importance(),
+            "Stream dts jumped back in time too far. dts %.2f - last dts %.2f = %.2f > 10seconds stream %d",
+            dts_time, last_dts_time, dts_time - last_dts_time, packet->stream_index);
+        if (error_count > 5)
+          return -1;
+        error_count += 1;
+        return 0;
+      }
+    }
+  }
+
+  av_packet_guard pkt_guard{packet};
+
+  // Real-time pacing: throttle delivery to the stream's native rate. Use dts
+  // (monotonic in read order) when available, otherwise pts. Sleep happens here,
+  // after all the drop/error filters above, so only packets we actually deliver
+  // advance the schedule.
+  if (mRealtime) {
+    int64_t pace_ts = (packet->dts != AV_NOPTS_VALUE) ? packet->dts : packet->pts;
+    if (pace_ts != AV_NOPTS_VALUE)
+      paceRealtime(av_rescale_q(pace_ts, stream->time_base, AV_TIME_BASE_Q));
+  }
+
+  zm_packet->codec_type = stream->codecpar->codec_type;
+
+  bytes += packet->size;
+  zm_packet->set_packet(packet.get());
+  zm_packet->stream = stream;
+  zm_packet->pts = av_rescale_q(packet->pts, stream->time_base, AV_TIME_BASE_Q);
+  if (packet->pts != AV_NOPTS_VALUE) {
+    if (stream == mVideoStream) {
+      if (mFirstVideoPTS == AV_NOPTS_VALUE)
+        mFirstVideoPTS = packet->pts;
+
+      mLastVideoPTS = packet->pts - mFirstVideoPTS;
+    } else if (stream == mAudioStream) {
+      if (mFirstAudioPTS == AV_NOPTS_VALUE)
+        mFirstAudioPTS = packet->pts;
+
+      mLastAudioPTS = packet->pts - mFirstAudioPTS;
+    }
+  }
+  if (packet->dts != AV_NOPTS_VALUE) {
+    if (packet->stream_index == mVideoStreamId)
+      mLastVideoDTS = packet->dts;
+    else if (packet->stream_index == mAudioStreamId)
+      mLastAudioDTS = packet->dts;
+  }
+
+  return 1;
+} // FfmpegCamera::Capture
 
 int FfmpegCamera::PostCapture() {
   // Nothing to do here
@@ -338,25 +429,54 @@ int FfmpegCamera::PostCapture() {
 }
 
 int FfmpegCamera::OpenFfmpeg() {
-  int ret;
-
-  have_video_keyframe = false;
+  int ret = 0;
   error_count = 0;
 
-  // Open the input, not necessarily a file
-#if !LIBAVFORMAT_VERSION_CHECK(53, 2, 0, 4, 0)
-  if ( av_open_input_file(&mFormatContext, mPath.c_str(), NULL, 0, NULL) != 0 )
-#else
+#if LIBAVFORMAT_VERSION_CHECK(59, 16, 100, 16, 100)
+  const
+#endif
+  AVInputFormat *input_format = nullptr;
   // Handle options
-  AVDictionary *opts = 0;
-  ret = av_dict_parse_string(&opts, Options().c_str(), "=", ",", 0);
-  if ( ret < 0 ) {
-    Warning("Could not parse ffmpeg input options '%s'", Options().c_str());
+  AVDictionary *opts = nullptr;
+  if (!mOptions.empty()) {
+    ret = av_dict_parse_string(&opts, mOptions.c_str(), "=", kOptionSeparators, 0);
+    if (ret < 0) {
+      Warning("Could not parse ffmpeg input options '%s'", mOptions.c_str());
+    }
+
+    // "loop=1" is handled by us (seek-to-start on EOF), not by ffmpeg, which
+    // does not understand it for most demuxers. Consume it so it is not passed
+    // through and reported as an unrecognized option below.
+    AVDictionaryEntry *loop_entry = av_dict_get(opts, "loop", nullptr, 0);
+    if (loop_entry) {
+      mLoop = (loop_entry->value != nullptr) && (atoi(loop_entry->value) != 0);
+      av_dict_set(&opts, "loop", nullptr, 0);
+      Debug(1, "Loop-on-EOF mode %s from options", mLoop ? "enabled" : "disabled");
+    }
+
+    // "realtime=1" (alias "re=1") is handled by us, like ffmpeg's -re flag:
+    // pace packet delivery to the stream's native rate rather than reading the
+    // file as fast as possible. Consume it so it is not passed through to the
+    // demuxer and reported as an unrecognized option below.
+    AVDictionaryEntry *re_entry = av_dict_get(opts, "realtime", nullptr, 0);
+    if (!re_entry) re_entry = av_dict_get(opts, "re", nullptr, 0);
+    if (re_entry) {
+      mRealtime = (re_entry->value != nullptr) && (atoi(re_entry->value) != 0);
+      av_dict_set(&opts, "realtime", nullptr, 0);
+      av_dict_set(&opts, "re", nullptr, 0);
+      Debug(1, "Real-time pacing %s from options", mRealtime ? "enabled" : "disabled");
+    }
   }
+
+  // Fresh prime: drop any real-time anchor so pacing restarts cleanly, and
+  // start with no loop offset.
+  mRealtimeAnchored = false;
+  mLoopVideoOffset = 0;
+  mLoopAudioOffset = 0;
 
   // Set transport method as specified by method field, rtpUni is default
   std::string protocol = mPath.substr(0, 4);
-  string_toupper(protocol);
+  protocol = StringToUpper(protocol);
   if ( protocol == "RTSP" ) {
     const std::string method = Method();
     if ( method == "rtpMulti" ) {
@@ -370,338 +490,405 @@ int FfmpegCamera::OpenFfmpeg() {
     } else {
       Warning("Unknown method (%s)", method.c_str());
     }
-    if ( ret < 0 ) {
+    if (ret < 0) {
       Warning("Could not set rtsp_transport method '%s'", method.c_str());
     }
+  } else if (protocol == "V4L2") {
+    avdevice_register_all();
+    input_format = av_find_input_format("video4linux2");
+    if (!input_format) {
+      Error("Cannot find v4l2 input format");
+      return -1;
+    }
+    mPath = mPath.substr(7);
   }  // end if RTSP
-  // #av_dict_set(&opts, "timeout", "10000000", 0); // in microseconds.
 
-  Debug(1, "Calling avformat_open_input for %s", mPath.c_str());
+  Debug(1, "Calling avformat_open_input for %s", mMaskedPath.c_str());
 
   mFormatContext = avformat_alloc_context();
-  // Speed up find_stream_info
-  // FIXME can speed up initial analysis but need sensible parameters...
-  // mFormatContext->probesize = 32;
-  // mFormatContext->max_analyze_duration = 32;
-  mFormatContext->interrupt_callback.callback = FfmpegInterruptCallback;
-  mFormatContext->interrupt_callback.opaque = this;
-
-  ret = avformat_open_input(&mFormatContext, mPath.c_str(), NULL, &opts);
-  if ( ret != 0 )
-#endif
-  {
-    Error("Unable to open input %s due to: %s", mPath.c_str(),
-        av_make_error_string(ret).c_str());
-#if !LIBAVFORMAT_VERSION_CHECK(53, 17, 0, 25, 0)
-    av_close_input_file(mFormatContext);
-#else
-    if ( mFormatContext ) {
-      avformat_close_input(&mFormatContext);
-      mFormatContext = NULL;
-    }
-#endif
+  if (!mFormatContext) {
+    Error("Unable to allocate format context");
     av_dict_free(&opts);
-
     return -1;
   }
-  AVDictionaryEntry *e = NULL;
-  while ( (e = av_dict_get(opts, "", e, AV_DICT_IGNORE_SUFFIX)) != NULL ) {
+  mFormatContext->interrupt_callback.callback = FfmpegInterruptCallback;
+  mFormatContext->interrupt_callback.opaque = this;
+  mFormatContext->flags |= AVFMT_FLAG_NOBUFFER | AVFMT_FLAG_FLUSH_PACKETS;
+
+  if (mUser.length() > 0) {
+    try {
+      Url url(mPath);
+      if (url.user_info().empty()) {
+        url.user_info(mUser + ":" + mPass);
+        mPath = url.str();
+        Debug(1, "Rebuilt URI with encoded parameters: '%s'", mMaskedPath.c_str());
+      }
+    } catch (const Url::parse_error &e) {
+      Debug(1, "Could not parse path as URL: %s", e.what());
+    }
+  }
+
+  ret = avformat_open_input(&mFormatContext, mPath.c_str(), input_format, &opts);
+  if (ret != 0) {
+    logPrintf(Logger::ERROR + monitor->Importance(),
+              "Unable to open input %s due to: %s", mMaskedPath.c_str(),
+              av_make_error_string(ret).c_str());
+    avformat_close_input(&mFormatContext);
+    mFormatContext = nullptr;
+    av_dict_free(&opts);
+    return -1;
+  }
+
+  AVDictionaryEntry *e = nullptr;
+  while ((e = av_dict_get(opts, "", e, AV_DICT_IGNORE_SUFFIX)) != nullptr) {
     Warning("Option %s not recognized by ffmpeg", e->key);
   }
   av_dict_free(&opts);
 
-#if !LIBAVFORMAT_VERSION_CHECK(53, 6, 0, 6, 0)
-  ret = av_find_stream_info(mFormatContext);
-#else
-  ret = avformat_find_stream_info(mFormatContext, 0);
-#endif
-  if ( ret < 0 ) {
+  ret = avformat_find_stream_info(mFormatContext, nullptr);
+  if (ret < 0) {
     Error("Unable to find stream info from %s due to: %s",
-        mPath.c_str(), av_make_error_string(ret).c_str());
+          mMaskedPath.c_str(), av_make_error_string(ret).c_str());
+    avformat_close_input(&mFormatContext);
     return -1;
   }
 
-  // Find first video stream present
-  // The one we want Might not be the first
+  // Find first video stream present, the one we want Might not be the first
   mVideoStreamId = -1;
   mAudioStreamId = -1;
-  for ( unsigned int i=0; i < mFormatContext->nb_streams; i++ ) {
+  for (unsigned int i=0; i < mFormatContext->nb_streams; i++) {
     AVStream *stream = mFormatContext->streams[i];
-    if ( is_video_stream(stream) ) {
-      if ( mVideoStreamId == -1 ) {
-        mVideoStreamId = i;
-        // if we break, then we won't find the audio stream
+    zm_dump_stream_format(mFormatContext, i, 0, 0);
+    if (is_video_stream(stream)) {
+      if (!(stream->codecpar->width && stream->codecpar->height)) {
+        Warning("No width and height in video stream. Trying again");
         continue;
+      }
+      if (mVideoStreamId == -1) {
+        mVideoStreamId = i;
+        mVideoStream = stream;
       } else {
         Debug(2, "Have another video stream.");
+        if (stream->codecpar->width == width and stream->codecpar->height == height) {
+          Debug(1, "Choosing alternate video stream because it matches our resolution.");
+          mVideoStreamId = i;
+          mVideoStream = stream;
+        } else {
+          stream->discard = AVDISCARD_ALL;
+        }
       }
-    } else if ( is_audio_stream(stream) ) {
-      if ( mAudioStreamId == -1 ) {
+    } else if (is_audio_stream(stream)) {
+      if (mAudioStreamId == -1) {
         mAudioStreamId = i;
+        mAudioStream = mFormatContext->streams[i];
       } else {
         Debug(2, "Have another audio stream.");
       }
+    } else {
+	    Debug(1, "Unknown stream type for stream %d", i);
     }
   }  // end foreach stream
-  if ( mVideoStreamId == -1 ) {
-    Error("Unable to locate video stream in %s", mPath.c_str());
+
+  if (mVideoStreamId == -1) {
+    avformat_close_input(&mFormatContext);
     return -1;
   }
 
   Debug(3, "Found video stream at index %d, audio stream at index %d",
-      mVideoStreamId, mAudioStreamId);
-  packetqueue = new zm_packetqueue(
-      (mVideoStreamId > mAudioStreamId) ? mVideoStreamId : mAudioStreamId);
+        mVideoStreamId, mAudioStreamId);
 
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-  // mVideoCodecContext = avcodec_alloc_context3(NULL);
-  // avcodec_parameters_to_context(mVideoCodecContext,
-  // mFormatContext->streams[mVideoStreamId]->codecpar);
-  // this isn't copied.
-  // mVideoCodecContext->time_base =
-  // mFormatContext->streams[mVideoStreamId]->codec->time_base;
-#else
-#endif
-  mVideoCodecContext = mFormatContext->streams[mVideoStreamId]->codec;
-#ifdef CODEC_FLAG2_FAST
-  mVideoCodecContext->flags2 |= CODEC_FLAG2_FAST | CODEC_FLAG_LOW_DELAY;
-#endif
-
-  if ( mVideoCodecContext->codec_id == AV_CODEC_ID_H264 ) {
-    if ( (mVideoCodec = avcodec_find_decoder_by_name("h264_mmal")) == NULL ) {
-      Debug(1, "Failed to find decoder (h264_mmal)");
-    } else {
-      Debug(1, "Success finding decoder (h264_mmal)");
-    }
+  const AVCodec *mVideoCodec = nullptr;
+  std::list<const CodecData *>codec_data = get_decoder_data(mVideoStream->codecpar->codec_id, monitor->DecoderName().c_str());
+  if (codec_data.size() == 0 and (!monitor->DecoderName().empty() and (monitor->DecoderName() != "auto"))) {
+    Warning("No decoder for codec %d found with name %s. Trying auto.", mVideoStream->codecpar->codec_id, monitor->DecoderName().c_str());
+    codec_data = get_decoder_data(mVideoStream->codecpar->codec_id, "auto");
   }
 
-  if ( !mVideoCodec ) {
-    mVideoCodec = avcodec_find_decoder(mVideoCodecContext->codec_id);
-    if ( !mVideoCodec ) {
-      // Try and get the codec from the codec context
-      Error("Can't find codec for video stream from %s", mPath.c_str());
-      return -1;
+  for (auto it = codec_data.begin(); it != codec_data.end(); it ++) {
+    const CodecData *chosen_codec_data = *it;
+    Debug(1, "Found codec %s", chosen_codec_data->codec_name);
+
+    mVideoCodec = avcodec_find_decoder_by_name(chosen_codec_data->codec_name);
+
+    if (!mVideoCodec) {
+      mVideoCodec = avcodec_find_decoder(mVideoStream->codecpar->codec_id);
+      if (!mVideoCodec) {
+        // Try and get the codec from the codec context
+        Error("Can't find codec for video stream from %s", mMaskedPath.c_str());
+        continue;
+      }
     }
-  }
 
-  zm_dump_stream_format(mFormatContext, mVideoStreamId, 0, 0);
+    mVideoCodecContext = avcodec_alloc_context3(mVideoCodec);
+    avcodec_parameters_to_context(mVideoCodecContext, mFormatContext->streams[mVideoStreamId]->codecpar);
+    mVideoCodecContext->framerate = mVideoStream->r_frame_rate;
+    mVideoCodecContext->sw_pix_fmt = chosen_codec_data->sw_pix_fmt;
 
-  if ( use_hwaccel && (hwaccel_name != "") ) {
+    // libavcodec defaults thread_count to 1, making software 1080p H.264
+    // decode hit ~60ms/frame and saturate a core per camera.  Default to 2
+    // frame-threads instead.  User can override (including 0 = auto) via
+    // thread_count in monitor Options.
+    mVideoCodecContext->thread_count = 2;
+    mVideoCodecContext->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+
+    // Set default options for this codec
+    if (chosen_codec_data->options_defaults) {
+      AVDictionary *opts_defaults = nullptr;
+      av_dict_parse_string(&opts_defaults, chosen_codec_data->options_defaults, "=", ",", 0);
+      AVDictionaryEntry *e = nullptr;
+      while ((e = av_dict_get(opts_defaults, "", e, AV_DICT_IGNORE_SUFFIX)) != nullptr) {
+        const AVDictionaryEntry *entry = av_dict_get(opts, e->key, nullptr, AV_DICT_MATCH_CASE);
+        if (!entry) {
+          int ret;
+          if ((ret = av_dict_set(&opts, e->key, e->value, 0)) < 0) {
+            Error("Couldn't set default Option %s set to %s", e->key, e->value);
+          }
+          Debug(1, "Option %s set to %s from default", e->key, e->value);
+        }
+      }
+      av_dict_free(&opts_defaults);
+    }
+
+    //Set user-specified options, which may override codec defaults
+    if (!mOptions.empty()) {
+      av_dict_parse_string(&opts, mOptions.c_str(), "=", kOptionSeparators, 0);
+      const AVDictionaryEntry *entry = av_dict_get(opts, "thread_count", nullptr, AV_DICT_MATCH_CASE);
+      if (entry) {
+        mVideoCodecContext->thread_count = std::stoul(entry->value);
+        Debug(1, "Setting codec thread_count to %d", mVideoCodecContext->thread_count);
+        av_dict_set(&opts, "thread_count", nullptr, AV_DICT_MATCH_CASE);
+      }
+      // reorder_queparse for avforpts, mOpcodec
+      av_dict_set(&opts, "reorder_queue_size", nullptr, AV_DICT_MATCH_CASE);
+      av_dict_set(&opts, "probesize", nullptr, AV_DICT_MATCH_CASE);
+      // loop / realtime (re) are consumed by FfmpegCamera, not the decoder;
+      // strip them so avcodec_open2 doesn't report them as unrecognized.
+      av_dict_set(&opts, "loop", nullptr, AV_DICT_MATCH_CASE);
+      av_dict_set(&opts, "realtime", nullptr, AV_DICT_MATCH_CASE);
+      av_dict_set(&opts, "re", nullptr, AV_DICT_MATCH_CASE);
+    }
+
+    if (use_hwaccel && (hwaccel_name != "")) {
 #if HAVE_LIBAVUTIL_HWCONTEXT_H
-    // 3.2 doesn't seem to have all the bits in place, so let's require 3.3 and up
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
-// Print out available types
-    enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
-    while ( (type = av_hwdevice_iterate_types(type)) != AV_HWDEVICE_TYPE_NONE )
-      Debug(1, "%s", av_hwdevice_get_type_name(type));
-
-    const char *hw_name = hwaccel_name.c_str();
-    type = av_hwdevice_find_type_by_name(hw_name);
-    if ( type == AV_HWDEVICE_TYPE_NONE ) {
-      Debug(1, "Device type %s is not supported.", hw_name);
-    } else {
-      Debug(1, "Found hwdevice %s", av_hwdevice_get_type_name(type));
-    }
-
-#if LIBAVUTIL_VERSION_CHECK(56, 22, 0, 14, 0)
-    // Get hw_pix_fmt
-    for ( int i = 0;; i++ ) {
-      const AVCodecHWConfig *config = avcodec_get_hw_config(mVideoCodec, i);
-      if ( !config ) {
-        Debug(1, "Decoder %s does not support device type %s.",
-            mVideoCodec->name, av_hwdevice_get_type_name(type));
-        break;
+      // 3.2 doesn't seem to have all the bits in place, so let's require 3.4 and up
+#if LIBAVCODEC_VERSION_CHECK(57, 107, 0, 107, 0)
+      // Build the list of hw device types to try. A DecoderHWAccelName of
+      // "auto" probes every hwaccel libav offers and uses the first that both
+      // the decoder supports and whose device can be created; any other value
+      // is a comma-separated priority list of device-type names, tried in
+      // order (e.g. "cuda,vaapi"; a single name like "vaapi" is just the
+      // one-element case and behaves as before). If nothing usable is found
+      // we transparently fall back to software.
+      std::vector<enum AVHWDeviceType> candidate_types;
+      bool auto_detect = (hwaccel_name == "auto");
+      enum AVHWDeviceType it = AV_HWDEVICE_TYPE_NONE;
+      while ((it = av_hwdevice_iterate_types(it)) != AV_HWDEVICE_TYPE_NONE) {
+        Debug(1, "Available hwdevice type %s", av_hwdevice_get_type_name(it));
+        if (auto_detect) candidate_types.push_back(it);
       }
-      if ( (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)
-          && (config->device_type == type)
-          ) {
-        hw_pix_fmt = config->pix_fmt;
-        break;
-      } else {
-        Debug(1, "decoder %s hwConfig doesn't match our type: %s != %s, pix_fmt %s.",
-            mVideoCodec->name,
-            av_hwdevice_get_type_name(type),
-            av_hwdevice_get_type_name(config->device_type),
-            av_get_pix_fmt_name(config->pix_fmt)
-            );
+      if (!auto_detect) {
+        for (const std::string &token : Split(hwaccel_name, ',')) {
+          std::string name = TrimSpaces(token);
+          if (name.empty()) continue;
+          enum AVHWDeviceType named = av_hwdevice_find_type_by_name(name.c_str());
+          if (named == AV_HWDEVICE_TYPE_NONE)
+            Warning("Unknown hwaccel device type '%s', skipping.", name.c_str());
+          else
+            candidate_types.push_back(named);
+        }
       }
-    }  // end foreach hwconfig
-#else
-    hw_pix_fmt = find_fmt_by_hw_type(type);
-#endif
-    if ( hw_pix_fmt != AV_PIX_FMT_NONE ) {
-      Debug(1, "Selected hw_pix_fmt %d %s",
-          hw_pix_fmt, av_get_pix_fmt_name(hw_pix_fmt));
 
-      ret = av_hwdevice_ctx_create(&hw_device_ctx, type,
-          (hwaccel_device != "" ? hwaccel_device.c_str(): NULL), NULL, 0);
-      if ( ret < 0 ) {
-        Error("Failed to create hwaccel device. %s",av_make_error_string(ret).c_str());
+      for (enum AVHWDeviceType type : candidate_types) {
+        Debug(1, "Trying hwdevice %s", av_hwdevice_get_type_name(type));
         hw_pix_fmt = AV_PIX_FMT_NONE;
-      } else {
-        Debug(1, "Created hwdevice for %s", hwaccel_device.c_str());
+#if LIBAVUTIL_VERSION_CHECK(56, 22, 0, 14, 0)
+        // Does this decoder advertise a hw config for this device type?
+        for (int i = 0;; i++) {
+          const AVCodecHWConfig *config = avcodec_get_hw_config(mVideoCodec, i);
+          if (!config) break;
+          if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)
+              && (config->device_type == type)) {
+            hw_pix_fmt = config->pix_fmt;
+            Debug(1, "Decoder %s supports type %s (pix_fmt %s).",
+                mVideoCodec->name, av_hwdevice_get_type_name(type),
+                zm_get_pix_fmt_name(hw_pix_fmt));
+          }
+        }  // end foreach hwconfig
+#else
+        hw_pix_fmt = find_fmt_by_hw_type(type);
+#endif
+        if (hw_pix_fmt == AV_PIX_FMT_NONE) {
+          Debug(1, "Decoder %s has no hw_pix_fmt for %s, skipping.",
+              mVideoCodec->name, av_hwdevice_get_type_name(type));
+          continue;
+        }
+
+        ret = av_hwdevice_ctx_create(&hw_device_ctx, type,
+            (hwaccel_device != "" ? hwaccel_device.c_str() : nullptr), nullptr, 0);
+        if (ret < 0 and hwaccel_device != "")
+          ret = av_hwdevice_ctx_create(&hw_device_ctx, type, nullptr, nullptr, 0);
+        if (ret < 0) {
+          Warning("Failed to create %s hwaccel device: %s",
+              av_hwdevice_get_type_name(type), av_make_error_string(ret).c_str());
+          hw_pix_fmt = AV_PIX_FMT_NONE;
+          hw_device_ctx = nullptr;
+          continue;  // try the next candidate
+        }
+
+        // Success: wire up hardware decoding and stop searching.
+        Info("Using %s hardware decoding for %s",
+            av_hwdevice_get_type_name(type), mVideoCodec->name);
+        mVideoCodecContext->hwaccel_flags |= AV_HWACCEL_FLAG_IGNORE_LEVEL;
+        //if (!lavc_param->check_hw_profile)
+        mVideoCodecContext->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
+        // Set opaque to point to our hw_pix_fmt so callback can access it
+        mVideoCodecContext->opaque = &hw_pix_fmt;
         mVideoCodecContext->get_format = get_hw_format;
         mVideoCodecContext->hw_device_ctx = av_buffer_ref(hw_device_ctx);
-        hwFrame = zm_av_frame_alloc();
+        break;
+      }  // end foreach candidate type
+
+      if (hw_pix_fmt == AV_PIX_FMT_NONE) {
+        // "auto" asks us to probe, so finding nothing is unremarkable. But if
+        // the admin named hwaccels explicitly and none of them worked, this
+        // monitor now decodes on the CPU and nothing else will ever say so:
+        // a default install does not log Debug, and we only get here once, at
+        // capture start. That silence hides a dead GPU for as long as nobody
+        // wonders why the load average doubled.
+        if (auto_detect) {
+          Debug(1, "No usable hardware decoder found; falling back to software decoding.");
+        } else {
+          Warning("None of the requested hwaccels (%s) are usable for %s; "
+              "falling back to software decoding.",
+              hwaccel_name.c_str(), mVideoCodec->name);
+        }
+        use_hwaccel = false;
       }
-    } else {
-      Debug(1, "Failed to find suitable hw_pix_fmt.");
+#else
+      Debug(1, "AVCodec not new enough for hwaccel");
+#endif
+#else
+      Warning("HWAccel support not compiled in.");
+#endif
+    }  // end if hwaccel_name
+
+    ret = avcodec_open2(mVideoCodecContext, mVideoCodec, &opts);
+
+    e = nullptr;
+    while ((e = av_dict_get(opts, "", e, AV_DICT_IGNORE_SUFFIX)) != nullptr) {
+      Warning("Option %s not recognized by ffmpeg", e->key);
     }
-#else
-    Debug(1, "AVCodec not new enough for hwaccel");
-#endif
-#else
-    Warning("HWAccel support not compiled in.");
-#endif
-  }  // end if hwaccel_name
-
-  // Open the codec
-#if !LIBAVFORMAT_VERSION_CHECK(53, 8, 0, 8, 0)
-  ret = avcodec_open(mVideoCodecContext, mVideoCodec);
-#else
-  ret = avcodec_open2(mVideoCodecContext, mVideoCodec, &opts);
-#endif
-  e = NULL;
-  while ( (e = av_dict_get(opts, "", e, AV_DICT_IGNORE_SUFFIX)) != NULL ) {
-    Warning("Option %s not recognized by ffmpeg", e->key);
-  }
-  if ( ret < 0 ) {
-    Error("Unable to open codec for video stream from %s", mPath.c_str());
     av_dict_free(&opts);
+
+    if (ret < 0) {
+      Error("Unable to open codec for video stream from %s", mMaskedPath.c_str());
+      avcodec_free_context(&mVideoCodecContext);
+      mVideoCodecContext = nullptr;
+      continue;
+    }
+    Debug(1, "Thread count? %d", mVideoCodecContext->thread_count);
+    zm_dump_codec(mVideoCodecContext);
+    break;
+  } // end foreach codec
+
+  if (!mVideoCodecContext) {
+    Debug(1, "Failed with known codecs, trying harder");
+    mVideoCodecContext = open_fallback_decoder(mVideoStream->codecpar, &mVideoCodec);
+  }
+
+  if (!mVideoCodecContext) {
+    Warning("Failed to open codec");
     return -1;
   }
-  zm_dump_codec(mVideoCodecContext);
 
-  Debug(1, hwFrame ? "HWACCEL in use" : "HWACCEL not in use");
-
-  if ( mAudioStreamId >= 0 ) {
-    if ( (mAudioCodec = avcodec_find_decoder(
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-            mFormatContext->streams[mAudioStreamId]->codecpar->codec_id
-#else
-            mFormatContext->streams[mAudioStreamId]->codec->codec_id
-#endif
-            )) == NULL ) {
-      Debug(1, "Can't find codec for audio stream from %s", mPath.c_str());
+  if (mAudioStreamId >= 0) {
+    const AVCodec *mAudioCodec = nullptr;
+    if (!(mAudioCodec = avcodec_find_decoder(mAudioStream->codecpar->codec_id))) {
+      Debug(1, "Can't find codec for audio stream from %s", mMaskedPath.c_str());
     } else {
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
       mAudioCodecContext = avcodec_alloc_context3(mAudioCodec);
-      avcodec_parameters_to_context(
-          mAudioCodecContext,
-          mFormatContext->streams[mAudioStreamId]->codecpar
-          );
-#else
-      mAudioCodecContext = mFormatContext->streams[mAudioStreamId]->codec;
-     // = avcodec_alloc_context3(mAudioCodec);
-#endif
+      avcodec_parameters_to_context(mAudioCodecContext, mAudioStream->codecpar);
 
-      zm_dump_stream_format(mFormatContext, mAudioStreamId, 0, 0);
+      zm_dump_stream_format((mSecondFormatContext?mSecondFormatContext:mFormatContext), mAudioStreamId, 0, 0);
       // Open the codec
-#if !LIBAVFORMAT_VERSION_CHECK(53, 8, 0, 8, 0)
-      if ( avcodec_open(mAudioCodecContext, mAudioCodec) < 0 ) {
-#else
-      if ( avcodec_open2(mAudioCodecContext, mAudioCodec, 0) < 0 ) {
-#endif
-        Error("Unable to open codec for audio stream from %s", mPath.c_str());
+      if (avcodec_open2(mAudioCodecContext, mAudioCodec, nullptr) < 0) {
+        Error("Unable to open codec for audio stream from %s", mMaskedPath.c_str());
         return -1;
+      }  // end if opened
+    }  // end if found decoder
+  } else if (!monitor->GetSecondPath().empty()) {
+    Debug(1, "Trying secondary stream at %s", mMaskedSecondPath.c_str());
+    std::string secondPath = mSecondPath;
+    if (mUser.length() > 0) {
+      try {
+        Url url(mSecondPath);
+        if (url.user_info().empty()) {
+          url.user_info(mUser + ":" + mPass);
+          secondPath = url.str();
+          Debug(1, "Rebuilt secondary URI with encoded parameters");
+        } else {
+          Debug(1, "Secondary path already has authentication, not overriding");
+        }
+      } catch (const Url::parse_error &e) {
+        Debug(1, "Could not parse secondary path as URL: %s", e.what());
       }
-      zm_dump_codec(mAudioCodecContext);
-    }  // end if find decoder
-  }  // end if have audio_context
-
-  // Allocate space for the native video frame
-  mRawFrame = zm_av_frame_alloc();
-
-  // Allocate space for the converted video frame
-  mFrame = zm_av_frame_alloc();
-
-  if ( mRawFrame == NULL || mFrame == NULL ) {
-    Error("Unable to allocate frame for %s", mPath.c_str());
-    return -1;
-  }
-  mFrame->width = width;
-  mFrame->height = height;
-
-
-#if HAVE_LIBSWSCALE
-  if ( !sws_isSupportedInput(mVideoCodecContext->pix_fmt) ) {
-    Error("swscale does not support the codec format for input: %s",
-        av_get_pix_fmt_name(mVideoCodecContext->pix_fmt)
-        );
-    return -1;
-  }
-
-  if ( !sws_isSupportedOutput(imagePixFormat) ) {
-    Error("swscale does not support the target format: %s",
-        av_get_pix_fmt_name(imagePixFormat)
-        );
-    return -1;
-  }
-
-#else  // HAVE_LIBSWSCALE
-  Fatal("You must compile ffmpeg with the --enable-swscale "
-      "option to use ffmpeg cameras");
-#endif  // HAVE_LIBSWSCALE
+    }
+    mSecondInput = zm::make_unique<FFmpeg_Input>();
+    if (mSecondInput->Open(secondPath.c_str()) > 0) {
+      mSecondFormatContext = mSecondInput->get_format_context();
+      mAudioStreamId = mSecondInput->get_audio_stream_id();
+      mAudioStream = mSecondInput->get_audio_stream();
+      mAudioCodecContext = mSecondInput->get_audio_codec_context();
+    } else {
+      Warning("Failed to open secondary input");
+    }
+  }  // end if have audio stream
 
   if (
-      ((unsigned int)mVideoCodecContext->width != width)
-      ||
-      ((unsigned int)mVideoCodecContext->height != height)
-      ) {
-    Warning("Monitor dimensions are %dx%d but camera is sending %dx%d",
-        width, height, mVideoCodecContext->width, mVideoCodecContext->height);
+    ((unsigned int)mVideoCodecContext->width != width)
+    ||
+    ((unsigned int)mVideoCodecContext->height != height)
+  ) {
+    Debug(1, "Monitor dimensions are %dx%d but camera is sending %dx%d",
+          width, height, mVideoCodecContext->width, mVideoCodecContext->height);
   }
 
-  mCanCapture = true;
+  // Seed fallback per-frame durations (in each stream's time_base) used to space
+  // loops apart when a packet's own duration is missing. Live values from
+  // packet->duration override these as packets are read.
+  if (mVideoStream && mVideoStream->avg_frame_rate.num > 0) {
+    mLoopVideoFrameDuration = av_rescale_q(1, av_inv_q(mVideoStream->avg_frame_rate), mVideoStream->time_base);
+  }
+  if (mLoopVideoFrameDuration <= 0) mLoopVideoFrameDuration = 1;
+  if (mAudioStream && mAudioStream->codecpar->sample_rate > 0) {
+    // Typical AAC frame is 1024 samples; good enough as a fallback spacing.
+    mLoopAudioFrameDuration = av_rescale_q(1024, av_make_q(1, mAudioStream->codecpar->sample_rate), mAudioStream->time_base);
+  }
+  if (mLoopAudioFrameDuration <= 0) mLoopAudioFrameDuration = 1;
 
-  return 0;
-}  // int FfmpegCamera::OpenFfmpeg()
+  mIsPrimed = true;
+
+  return 1;
+} // int FfmpegCamera::OpenFfmpeg()
 
 int FfmpegCamera::Close() {
-  Debug(2, "CloseFfmpeg called.");
+  mIsPrimed = false;
+  mLastVideoPTS = 0;
+  mLastAudioPTS = 0;
+  mLastVideoDTS = AV_NOPTS_VALUE;
+  mLastAudioDTS = AV_NOPTS_VALUE;
 
-  mCanCapture = false;
-
-  if ( mFrame ) {
-    av_frame_free(&mFrame);
-    mFrame = NULL;
-  }
-  if ( mRawFrame ) {
-    av_frame_free(&mRawFrame);
-    mRawFrame = NULL;
-  }
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-  if ( hwFrame ) {
-    av_frame_free(&hwFrame);
-    hwFrame = NULL;
-  }
-#endif
-
-#if HAVE_LIBSWSCALE
-  if ( mConvertContext ) {
-    sws_freeContext(mConvertContext);
-    mConvertContext = NULL;
-  }
-#endif
-
-  if ( videoStore ) {
-    delete videoStore;
-    videoStore = NULL;
+  if (mVideoCodecContext) {
+    //avcodec_close(mVideoCodecContext);
+    avcodec_free_context(&mVideoCodecContext);
+    mVideoCodecContext = nullptr;
   }
 
-  if ( mVideoCodecContext ) {
-    avcodec_close(mVideoCodecContext);
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-    // avcodec_free_context(&mVideoCodecContext);
-#endif
-    mVideoCodecContext = NULL;  // Freed by av_close_input_file
-  }
-  if ( mAudioCodecContext ) {
-    avcodec_close(mAudioCodecContext);
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
+  if (mAudioCodecContext and !mSecondInput) {
+    // If second input, then these will get freed in FFmpeg_Input's destructor
+    //avcodec_close(mAudioCodecContext);
     avcodec_free_context(&mAudioCodecContext);
-#endif
-    mAudioCodecContext = NULL;  // Freed by av_close_input_file
+    mAudioCodecContext = nullptr;
   }
 
 #if HAVE_LIBAVUTIL_HWCONTEXT_H
@@ -710,453 +897,34 @@ int FfmpegCamera::Close() {
   }
 #endif
 
-  if ( mFormatContext ) {
-#if !LIBAVFORMAT_VERSION_CHECK(53, 17, 0, 25, 0)
-    av_close_input_file(mFormatContext);
-#else
-    avformat_close_input(&mFormatContext);
-#endif
-    mFormatContext = NULL;
-  }
+  // Re-arm hardware decoding for the next PrimeCapture(). Without this a
+  // single transient failure - a GPU still resetting, a driver that finished
+  // initialising after zmc started, a render node not yet permissioned -
+  // pins the monitor to software decoding for the whole life of the process,
+  // long after the hardware is healthy again. Reconnects are the natural
+  // retry point, so let them retry.
+  use_hwaccel = true;
 
-  if ( packetqueue ) {
-    delete packetqueue;
-    packetqueue = NULL;
+  if ( mFormatContext ) {
+    avformat_close_input(&mFormatContext);
+    mFormatContext = nullptr;
   }
 
   return 0;
 }  // end FfmpegCamera::Close
 
-// Function to handle capture and store
-int FfmpegCamera::CaptureAndRecord(
-    Image &image,
-    timeval recording,
-    char* event_file
-    ) {
-  if ( !mCanCapture ) {
-    return -1;
-  }
-  int ret;
-
-  struct timeval video_buffer_duration = monitor->GetVideoBufferDuration();
-
-  int frameComplete = false;
-  while ( !frameComplete ) {
-    av_init_packet(&packet);
-
-    ret = av_read_frame(mFormatContext, &packet);
-    if ( ret < 0 ) {
-      if (
-          // Check if EOF.
-          (
-           (ret == AVERROR_EOF) ||
-           (mFormatContext->pb && mFormatContext->pb->eof_reached)
-           ) ||
-          // Check for Connection failure.
-          (ret == -110)
-         ) {
-        Info("Unable to read packet from stream %d: error %d \"%s\".",
-            packet.stream_index, ret, av_make_error_string(ret).c_str());
-      } else {
-        Error("Unable to read packet from stream %d: error %d \"%s\".",
-            packet.stream_index, ret, av_make_error_string(ret).c_str());
-      }
-      return -1;
-    }
-
-    int keyframe = packet.flags & AV_PKT_FLAG_KEY;
-    bytes += packet.size;
-    dumpPacket(
-        mFormatContext->streams[packet.stream_index],
-        &packet,
-        "Captured Packet");
-    if ( packet.dts == AV_NOPTS_VALUE ) {
-      packet.dts = packet.pts;
-    }
-
-    // Video recording
-    if ( recording.tv_sec ) {
-      uint32_t last_event_id = monitor->GetLastEventId();
-      uint32_t video_writer_event_id = monitor->GetVideoWriterEventId();
-
-      if ( last_event_id != video_writer_event_id ) {
-        Debug(2, "Have change of event.  last_event(%d), our current (%d)",
-            last_event_id, video_writer_event_id);
-
-        if ( videoStore ) {
-          Info("Re-starting video storage module");
-
-          // I don't know if this is important or not... but I figure we might
-          // as well write this last packet out to the store before closing it.
-          // Also don't know how much it matters for audio.
-          if ( packet.stream_index == mVideoStreamId ) {
-            // Write the packet to our video store
-            int ret = videoStore->writeVideoFramePacket(&packet);
-            if ( ret < 0 ) {  // Less than zero and we skipped a frame
-              Warning("Error writing last packet to videostore.");
-            }
-          }  // end if video
-
-          delete videoStore;
-          videoStore = NULL;
-          have_video_keyframe = false;
-
-          monitor->SetVideoWriterEventId(0);
-        }  // end if videoStore
-      }  // end if end of recording
-
-      if ( last_event_id && !videoStore ) {
-        // Instantiate the video storage module
-
-        packetqueue->dumpQueue();
-        if ( record_audio ) {
-          if ( mAudioStreamId == -1 ) {
-            Debug(3, "Record Audio on but no audio stream found");
-            videoStore = new VideoStore((const char *) event_file, "mp4",
-                mFormatContext->streams[mVideoStreamId],
-                NULL,
-                this->getMonitor());
-
-          } else {
-            Debug(3, "Video module initiated with audio stream");
-            videoStore = new VideoStore((const char *) event_file, "mp4",
-                mFormatContext->streams[mVideoStreamId],
-                mFormatContext->streams[mAudioStreamId],
-                this->getMonitor());
-          }
-        } else {
-          if ( mAudioStreamId >= 0 ) {
-            Debug(3, "Record_audio is false so exclude audio stream");
-          }
-          videoStore = new VideoStore((const char *) event_file, "mp4",
-              mFormatContext->streams[mVideoStreamId],
-              NULL,
-              this->getMonitor());
-        }  // end if record_audio
-
-        if ( !videoStore->open() ) {
-          delete videoStore;
-          videoStore = NULL;
-
-        } else {
-          monitor->SetVideoWriterEventId(last_event_id);
-
-          // Need to write out all the frames from the last keyframe?
-          // No... need to write out all frames from when the event began.
-          // Due to PreEventFrames, this could be more than
-          // since the last keyframe.
-          unsigned int packet_count = 0;
-          ZMPacket *queued_packet;
-          struct timeval video_offset = {0};
-
-          // Clear all packets that predate the moment when the recording began
-          packetqueue->clear_unwanted_packets(
-              &recording, 0, mVideoStreamId);
-
-          while ( (queued_packet = packetqueue->popPacket()) ) {
-            AVPacket *avp = queued_packet->av_packet();
-
-            // compute time offset between event start and first frame in video
-            if (packet_count == 0){
-                monitor->SetVideoWriterStartTime(queued_packet->timestamp);
-                timersub(&queued_packet->timestamp, &recording, &video_offset);
-                Info("Event video offset is %.3f sec (<0 means video starts early)",
-                     video_offset.tv_sec + video_offset.tv_usec*1e-6);
-            }
-
-            packet_count += 1;
-            // Write the packet to our video store
-            Debug(2, "Writing queued packet stream: %d  KEY %d, remaining (%d)",
-                avp->stream_index,
-                avp->flags & AV_PKT_FLAG_KEY,
-                packetqueue->size());
-            if ( avp->stream_index == mVideoStreamId ) {
-              ret = videoStore->writeVideoFramePacket(avp);
-              have_video_keyframe = true;
-            } else if ( avp->stream_index == mAudioStreamId ) {
-              ret = videoStore->writeAudioFramePacket(avp);
-            } else {
-              Warning("Unknown stream id in queued packet (%d)",
-                  avp->stream_index);
-              ret = -1;
-            }
-            if ( ret < 0 ) {
-              // Less than zero and we skipped a frame
-            }
-            delete queued_packet;
-          }  // end while packets in the packetqueue
-          Debug(2, "Wrote %d queued packets", packet_count);
-        }
-      }  // end if ! was recording
-
-    } else {
-      // Not recording
-
-      if ( videoStore ) {
-        Debug(1, "Deleting videoStore instance");
-        delete videoStore;
-        videoStore = NULL;
-        have_video_keyframe = false;
-        monitor->SetVideoWriterEventId(0);
-      }
-    }  // end if recording or not
-
-    // Buffer video packets, since we are not recording.
-    // All audio packets are keyframes, so only if it's a video keyframe
-    if ( packet.stream_index == mVideoStreamId ) {
-      if ( keyframe ) {
-        Debug(3, "Clearing queue");
-        if (video_buffer_duration.tv_sec > 0 || video_buffer_duration.tv_usec > 0) {
-            packetqueue->clearQueue(&video_buffer_duration, mVideoStreamId);
-        }
-        else {
-            packetqueue->clearQueue(monitor->GetPreEventCount(), mVideoStreamId);
-        }
-
-        if (
-            packetqueue->packet_count(mVideoStreamId)
-            >=
-            monitor->GetImageBufferCount()
-            ) {
-          Warning(
-              "ImageBufferCount %d is too small. "
-              "Needs to be at least %d. "
-              "Either increase it or decrease time between keyframes",
-              monitor->GetImageBufferCount(),
-              packetqueue->packet_count(mVideoStreamId)+1);
-        }
-
-        packetqueue->queuePacket(&packet);
-      } else if ( packetqueue->size() ) {
-        // it's a keyframe or we already have something in the queue
-        packetqueue->queuePacket(&packet);
-      }
-    } else if ( packet.stream_index == mAudioStreamId ) {
-      // Ensure that the queue always begins with a video keyframe
-      if ( record_audio && packetqueue->size() ) {
-        packetqueue->queuePacket(&packet);
-      }
-    }  // end if packet type
-
-    if ( packet.stream_index == mVideoStreamId ) {
-      if ( (have_video_keyframe || keyframe) && videoStore ) {
-        int ret = videoStore->writeVideoFramePacket(&packet);
-        if ( ret < 0 ) {
-          // Less than zero and we skipped a frame
-          Error("Unable to write video packet code: %d, framecount %d: %s",
-              ret, frameCount, av_make_error_string(ret).c_str());
-        } else {
-          have_video_keyframe = true;
-        }
-      }  // end if keyframe or have_video_keyframe
-
-      ret = zm_send_packet_receive_frame(mVideoCodecContext, mRawFrame, packet);
-      if ( ret < 0 ) {
-        if ( AVERROR(EAGAIN) != ret ) {
-          Warning("Unable to receive frame %d: code %d %s. error count is %d",
-              frameCount, ret, av_make_error_string(ret).c_str(), error_count);
-          error_count += 1;
-          if ( error_count > 100 ) {
-            Error("Error count over 100, going to close and re-open stream");
-            return -1;
-          }
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
-          if ( (ret == AVERROR_INVALIDDATA ) && (hw_pix_fmt != AV_PIX_FMT_NONE) ) {
-            use_hwaccel = false;
-            return -1;
-          }
-#endif
-#endif
-        }
-        zm_av_packet_unref(&packet);
-        continue;
-      }
-      if ( error_count > 0 ) error_count--;
-      zm_dump_video_frame(mRawFrame, "raw frame from decoder");
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
-      if (
-          (hw_pix_fmt != AV_PIX_FMT_NONE)
-          &&
-          (mRawFrame->format == hw_pix_fmt)
-          ) {
-        /* retrieve data from GPU to CPU */
-        ret = av_hwframe_transfer_data(hwFrame, mRawFrame, 0);
-        if ( ret < 0 ) {
-          Error("Unable to transfer frame at frame %d: %s, continuing",
-              frameCount, av_make_error_string(ret).c_str());
-          zm_av_packet_unref(&packet);
-          continue;
-        }
-        zm_dump_video_frame(hwFrame, "After hwtransfer");
-
-        hwFrame->pts = mRawFrame->pts;
-        input_frame = hwFrame;
-      } else {
-#endif
-#endif
-        input_frame = mRawFrame;
-#if HAVE_LIBAVUTIL_HWCONTEXT_H
-#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
-      }
-#endif
-#endif
-      if ( transfer_to_image(image, mFrame, input_frame) < 0 ) {
-        Error("Failed to transfer from frame to image");
-        zm_av_packet_unref(&packet);
-        return -1;
-      }
-
-      frameComplete = 1;
-      frameCount++;
-    } else if ( packet.stream_index == mAudioStreamId ) {
-      // FIXME best way to copy all other streams
-      frameComplete = 1;
-      if ( videoStore ) {
-        if ( record_audio ) {
-          if ( have_video_keyframe ) {
-            // Write the packet to our video store
-            // FIXME no relevance of last key frame
-            int ret = videoStore->writeAudioFramePacket(&packet);
-            if ( ret < 0 ) {
-              // Less than zero and we skipped a frame
-              Warning("Failure to write audio packet.");
-              zm_av_packet_unref(&packet);
-              return 0;
-            }
-          } else {
-            Debug(3, "Not recording audio because no video keyframe");
-          }
-        } else {
-          Debug(4, "Not doing recording of audio packet");
-        }
-      } else {
-        Debug(4, "Have audio packet, but not recording atm");
-      }
-      zm_av_packet_unref(&packet);
-      return 0;
-    } else {
-#if LIBAVUTIL_VERSION_CHECK(56, 23, 0, 23, 0)
-      Debug(3, "Some other stream index %d, %s",
-          packet.stream_index,
-          av_get_media_type_string(
-            mFormatContext->streams[packet.stream_index]->codecpar->codec_type)
-          );
-#else
-      Debug(3, "Some other stream index %d", packet.stream_index);
-#endif
-    }  // end if is video or audio or something else
-
-    // the packet contents are ref counted... when queuing, we allocate another
-    // packet and reference it with that one, so we should always need to unref
-    // here, which should not affect the queued version.
-    zm_av_packet_unref(&packet);
-  }  // end while ! frameComplete
-  return frameCount;
-}  // end FfmpegCamera::CaptureAndRecord
-
-int FfmpegCamera::transfer_to_image(
-    Image &image,
-    AVFrame *output_frame,
-    AVFrame *input_frame
-    ) {
-  uint8_t* directbuffer;
-
-  /* Request a writeable buffer of the target image */
-  directbuffer = image.WriteBuffer(width, height, colours, subpixelorder);
-  if ( directbuffer == NULL ) {
-    Error("Failed requesting writeable buffer for the captured image.");
-    return -1;
-  }
-#if LIBAVUTIL_VERSION_CHECK(54, 6, 0, 6, 0)
-  // From what I've read, we should align the linesizes to 32bit so that ffmpeg can use SIMD instructions too.
-  int size = av_image_fill_arrays(
-      output_frame->data, output_frame->linesize,
-      directbuffer, imagePixFormat, width, height, 
-      alignment
-      );
-  if ( size < 0 ) {
-    Error("Problem setting up data pointers into image %s",
-        av_make_error_string(size).c_str());
-  } else {
-    Debug(4, "av_image_fill_array %dx%d alignment: %d = %d, buffer size is %d",
-        width, height, alignment, size, image.Size());
-  }
-  Debug(1, "ffmpegcamera: width %d height %d linesize %d colours %d imagesize %d", width, height, linesize, colours, imagesize);
-  if ( linesize != (unsigned int)output_frame->linesize[0] ) {
-    Error("Bad linesize expected %d got %d", linesize, output_frame->linesize[0]);
-  }
-#else
-  avpicture_fill((AVPicture *)output_frame, directbuffer,
-      imagePixFormat, width, height);
-#endif
-#if HAVE_LIBSWSCALE
-  if ( !mConvertContext ) {
-    mConvertContext = sws_getContext(
-        input_frame->width,
-        input_frame->height,
-        (AVPixelFormat)input_frame->format,
-        width, height,
-        imagePixFormat, SWS_BICUBIC, NULL,
-        NULL, NULL);
-    if ( mConvertContext == NULL ) {
-      Error("Unable to create conversion context for %s from %s to %s",
-          mPath.c_str(),
-          av_get_pix_fmt_name((AVPixelFormat)input_frame->format),
-          av_get_pix_fmt_name(imagePixFormat)
-          );
-      return -1;
-    }
-    Debug(1, "Setup conversion context for %dx%d %s to %dx%d %s",
-          input_frame->width, input_frame->height,
-          av_get_pix_fmt_name((AVPixelFormat)input_frame->format),
-          width, height,
-          av_get_pix_fmt_name(imagePixFormat)
-        );
-  }
-
-  int ret =
-      sws_scale(
-        mConvertContext, input_frame->data, input_frame->linesize,
-        0, mVideoCodecContext->height,
-        output_frame->data, output_frame->linesize);
-  if ( ret < 0 ) {
-    Error("Unable to convert format %u %s linesize %d,%d height %d to format %u %s linesize %d,%d at frame %d codec %u %s lines %d: code: %d",
-        input_frame->format, av_get_pix_fmt_name((AVPixelFormat)input_frame->format),
-        input_frame->linesize[0], input_frame->linesize[1], mVideoCodecContext->height,
-        imagePixFormat,
-        av_get_pix_fmt_name(imagePixFormat),
-        output_frame->linesize[0], output_frame->linesize[1],
-        frameCount,
-        mVideoCodecContext->pix_fmt, av_get_pix_fmt_name(mVideoCodecContext->pix_fmt),
-        mVideoCodecContext->height,
-        ret
-        );
-    return -1;
-  }
-    Debug(4, "Able to convert format %u %s linesize %d,%d height %d to format %u %s linesize %d,%d at frame %d codec %u %s %dx%d ",
-        input_frame->format, av_get_pix_fmt_name((AVPixelFormat)input_frame->format),
-        input_frame->linesize[0], input_frame->linesize[1], mVideoCodecContext->height,
-        imagePixFormat,
-        av_get_pix_fmt_name(imagePixFormat),
-        output_frame->linesize[0], output_frame->linesize[1],
-        frameCount,
-        mVideoCodecContext->pix_fmt, av_get_pix_fmt_name(mVideoCodecContext->pix_fmt),
-        output_frame->width,
-        output_frame->height
-        );
-#else  // HAVE_LIBSWSCALE
-  Fatal("You must compile ffmpeg with the --enable-swscale "
-      "option to use ffmpeg cameras");
-#endif  // HAVE_LIBSWSCALE
-  return 0;
-}  // end int FfmpegCamera::transfer_to_image
-
 int FfmpegCamera::FfmpegInterruptCallback(void *ctx) {
-  // FfmpegCamera* camera = reinterpret_cast<FfmpegCamera*>(ctx);
-  // Debug(4, "FfmpegInterruptCallback");
-  return zm_terminate;
-}
+  if (zm_terminate) {
+    Debug(1, "Received terminate in cb");
+    return zm_terminate;
+  }
 
-#endif  // HAVE_LIBAVFORMAT
+  TimePoint now = std::chrono::steady_clock::now();
+  if (now - start_read_time > Seconds(10)) {
+    Debug(1, "timeout in ffmpeg camera now %" PRIi64 " - %" PRIi64 " > 10 s",
+          static_cast<int64>(std::chrono::duration_cast<Seconds>(now.time_since_epoch()).count()),
+          static_cast<int64>(std::chrono::duration_cast<Seconds>(start_read_time.time_since_epoch()).count()));
+    return 1;
+  }
+  return 0;
+}

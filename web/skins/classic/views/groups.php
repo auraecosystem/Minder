@@ -35,37 +35,61 @@ foreach ( ZM\Group::find() as $Group ) {
 # This  array is indexed by parent_id
 $children = array();
 foreach ( $Groups as $id=>$Group ) {
-  if ( ! isset( $children[$Group->ParentId()] ) )
-    $children[$Group->ParentId()] = array();
-  $children[$Group->ParentId()][] = $Group;
+  // From PHP 8.5, using 'null' as an array offset is deprecated
+  $parentID = $Group->ParentId() ?? '';
+  if ( ! isset( $children[$parentID] ) )
+    $children[$parentID] = array();
+  $children[$parentID][] = $Group;
   if ( $max_depth < $Group->depth() )
     $max_depth = $Group->depth();
 }
 xhtmlHeaders(__FILE__, translate('Groups'));
+getBodyTopHTML();
 ?>
-<body>
   <div id="page">
     <?php echo $navbar = getNavBarHTML(); ?>
-    <div id="content">
-      <form name="groupsForm" method="get" action="?">
-        <input type="hidden" name="view" value="none"/>
-        <input type="hidden" name="action" value="setgroup"/>
-        <table id="contentTable" class="major">
-          <thead class="thead-highlight">
-            <tr>
-              <th class="colName" colspan="<?php echo $max_depth+1 ?>"><?php echo translate('Name') ?></th>
-              <th class="colIds"><?php echo translate('Monitors') ?></th>
+    <div id="content" class="row">
+      <div id="optionsContainer" class="col">
+        <form name="groupsForm" method="post" action="?">
+          <div id="options">
+            <input type="hidden" name="view" value="groups"/>
+            <input type="hidden" name="action" value="setgroup"/>
+            <div class="row">
+              <div class="col">
+                <div id="contentButtons">
+                  <button type="button" value="New" data-on-click="newGroup"<?php echo canEdit('Groups')?'':' disabled="disabled"' ?>>
+                  <i class="material-icons md-18">add_circle</i>
+                  <span class="text"><?php echo translate('New') ?></span>
+                  </button>
+                  <button type="button" class="btn-danger" name="deleteBtn" value="Delete" data-on-click-this="deleteGroup" disabled="disabled">
+                  <i class="material-icons md-18">delete</i>
+                  <span class="text"><?php echo translate('Delete') ?></span>
+                  </button>
+                </div>
+              </div> <!-- .col -->
+            </div> <!-- .row -->
+            <div class="wrapper-scroll-table">
+              <div class="row">
+                <div class="col">
+                  <table id="contentTable" class="major table-sm table-striped">
+                    <thead class="thead-highlight">
+                      <tr>
 <?php if ( canEdit('Groups') ) { ?>
-              <th class="colSelect"><?php echo translate('Mark') ?></th>
+                        <th class="colSelect"><?php echo translate('Mark') ?></th>
 <?php } ?>
-            </tr>
-          </thead>
-          <tbody>
+                        <th class="colName" colspan="<?php echo $max_depth+1 ?>"><?php echo translate('Name') ?></th>
+                        <th class="colIds"><?php echo translate('Monitors') ?></th>
+                      </tr>
+                    </thead>
+                    <tbody>
 <?php
 function group_line( $Group ) {
   global $children;
   global $max_depth;
   $html = '<tr>';
+  if ( canEdit('Groups') ) {
+    $html .= '<td class="colSelect"><input type="checkbox" name="gid[]" value="'. $Group->Id() .'" data-on-click-this="configureButtons"/></td>';
+  }
   $html .= str_repeat('<td class="colName">&nbsp;</td>', $Group->depth());
   $html .= '<td class="colName" colspan="'.($max_depth-($Group->depth()-1)).'">';
   if ( canEdit('Groups') ) {
@@ -74,9 +98,6 @@ function group_line( $Group ) {
     $html .= validHtmlStr($Group->Name());
   }
   $html .= '</td><td class="colIds">'. validHtmlStr(monitorIdsToNames($Group->MonitorIds(), 30)).'</td>';
-  if ( canEdit('Groups') ) {
-    $html .= '<td class="colSelect"><input type="checkbox" name="gid[]" value="'. $Group->Id() .'" data-on-click-this="configureButtons"/></td>';
-  }
   $html .= '</tr>';
   if ( isset( $children[$Group->Id()] ) ) {
     foreach ( $children[$Group->Id()] as $G ) {
@@ -85,22 +106,18 @@ function group_line( $Group ) {
   }
   return $html;
 }
-if ( isset( $children[null] ) )
-  foreach ( $children[null] as $Group )
+if ( isset( $children[''] ) )
+  foreach ( $children[''] as $Group )
     echo group_line($Group);
 ?>
-          </tbody>
-        </table>
-        <div id="contentButtons">
-          <button type="button" value="New" data-on-click="newGroup"<?php echo canEdit('Groups')?'':' disabled="disabled"' ?>>
-          <?php echo translate('New') ?>
-          </button>
-          <button type="button" name="deleteBtn" value="Delete" data-on-click-this="deleteGroup" disabled="disabled">
-          <?php echo translate('Delete') ?>
-          </button>
-        </div>
-      </form>
-    </div>
-  </div>
-</body>
-</html>
+                    </tbody>
+                  </table>
+                </div> <!-- .col -->
+              </div> <!-- .row -->
+            </div> <!-- .wrapper-scroll-table -->
+          </div><!-- .options -->
+        </form>
+      </div> <!-- .col -->
+    </div> <!-- .row -->
+  </div> <!-- #page -->
+<?php xhtmlFooter() ?>

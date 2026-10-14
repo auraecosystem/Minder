@@ -20,10 +20,11 @@
 
 
 if ( $action == 'logout' ) {
+  ZM\Audit("user=".($user ? $user->Username() : 'unknown')." action=logout id=".($user ? $user->Id() : 0)." from=".($_SERVER['REMOTE_ADDR'] ?? 'local'));
   userLogout();
-  $refreshParent = true;
-  $view = 'none';
-  $closePopup = true;
-  ZM\Logger::Debug("User: " . print_r($user,true));
+  $view = 'login';
+} elseif ( $action == 'config' ) {
+  $redirect = '?view=user&prev=console&uid='.$user->Id();
 }
+
 ?>

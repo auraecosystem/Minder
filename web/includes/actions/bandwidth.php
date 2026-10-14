@@ -20,10 +20,18 @@
 
 
 if ( $action == 'bandwidth' && isset($_REQUEST['newBandwidth']) ) {
-  $_COOKIE['zmBandwidth'] = validStr($_REQUEST['newBandwidth']);
-  setcookie('zmBandwidth', validStr($_REQUEST['newBandwidth']), time()+3600*24*30*12*10);
-  $refreshParent = true;
-  $view = 'none';
-  $closePopup = true;
+  $newBandwidth = validStr($_REQUEST['newBandwidth']);
+  // Storing an unrecognised profile would leave the skin unable to define its
+  // ZM_WEB_* constants on every subsequent request, so reject it here instead
+  // of persisting it to the cookie.
+  if ( !isValidBandwidth($newBandwidth) ) {
+    ZM\Error('Ignoring invalid bandwidth value: '.$newBandwidth);
+  } else {
+    $_COOKIE['zmBandwidth'] = $newBandwidth;
+    zm_setcookie('zmBandwidth', $newBandwidth);
+    $refreshParent = true;
+    $view = 'none';
+    $closePopup = true;
+  }
 }
 ?>

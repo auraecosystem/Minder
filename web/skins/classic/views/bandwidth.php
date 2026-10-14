@@ -21,11 +21,11 @@
 $newBandwidth = $_COOKIE['zmBandwidth'];
 
 # Limit available options to what are available in user
-if ( $user && !empty($user['MaxBandwidth']) ) {
-  if ( $user['MaxBandwidth'] == 'low' ) {
+if ( $user && !empty($user->MaxBandwidth()) ) {
+  if ( $user->MaxBandwidth() == 'low' ) {
     unset($bandwidth_options['high']);
     unset($bandwidth_options['medium']);
-  } else if ( $user['MaxBandwidth'] == 'medium' ) {
+  } else if ( $user->MaxBandwidth() == 'medium' ) {
     unset($bandwidth_options['high']);
   }
 }
@@ -33,8 +33,9 @@ if ( $user && !empty($user['MaxBandwidth']) ) {
 $focusWindow = true;
 
 xhtmlHeaders(__FILE__, translate('Bandwidth'));
+getBodyTopHTML();
+echo getNavBarHTML();
 ?>
-<body>
   <div id="page">
     <div id="header">
       <h2><?php echo translate('Bandwidth') ?></h2>
@@ -47,10 +48,9 @@ xhtmlHeaders(__FILE__, translate('Bandwidth'));
         <p><?php echo buildSelect('newBandwidth', $bandwidth_options) ?></p>
         <div id="contentButtons">
           <button type="submit" value="Save"><?php echo translate('Save') ?></button>
-          <button type="button" data-on-click="closeWindow"><?php echo translate('Cancel') ?></button>
+          <button type="button" data-on-click="backWindow"><?php echo translate('Cancel') ?></button>
         </div>
       </form>
     </div>
   </div>
-</body>
-</html>
+<?php xhtmlFooter() ?>

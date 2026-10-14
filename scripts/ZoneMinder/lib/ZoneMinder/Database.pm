@@ -1,6 +1,6 @@
 # ==========================================================================
 #
-# ZoneMinder Database Module, $Date$, $Revision$
+# ZoneMinder Database Module
 # Copyright (C) 2001-2008  Philip Coombes
 #
 # This program is free software; you can redistribute it and/or
@@ -27,6 +27,7 @@ package ZoneMinder::Database;
 use 5.006;
 use strict;
 use warnings;
+use version;
 
 require Exporter;
 require ZoneMinder::Base;
@@ -48,6 +49,10 @@ our %EXPORT_TAGS = (
       zmDbGetMonitor
       zmDbGetMonitorAndControl
       zmDbDo
+      zmDbExecute
+      zmSQLExecute
+      zmDbFetchOne
+      zmDbSupportsFeature
       ) ]
     );
 push( @{$EXPORT_TAGS{all}}, @{$EXPORT_TAGS{$_}} ) foreach keys %EXPORT_TAGS;
@@ -70,6 +75,81 @@ require ZoneMinder::Config;
 
 our $dbh = undef;
 
+# Which DBD do we drive the database with? DBD::mysql 5 refuses to connect to a
+# MariaDB server, so prefer DBD::MariaDB when it is installed: it drives both
+# MySQL and MariaDB. Cached because the answer cannot change within a process.
+#
+# ZM_DB_TYPE is deliberately not consulted. It also builds the PHP PDO dsn, and
+# PDO has no MariaDB driver, so its only working value is mysql whichever server
+# is in use.
+my $db_driver;
+sub zmDbDriver {
+  return $db_driver if defined $db_driver;
+
+  $db_driver = eval { require DBD::MariaDB; 1 } ? 'MariaDB' : 'mysql';
+  Debug("Using DBD::$db_driver to reach the database");
+  return $db_driver;
+}
+
+# Build the DBI dsn for $driver from a hash of ZM_DB_* values. The two drivers
+# differ by more than the scheme: DBD::MariaDB spells DBD::mysql's mysql_*
+# parameters mariadb_*, and ignores parameters it does not recognise, so a dsn
+# built with the wrong prefix does not fail. It quietly drops the socket path
+# and the TLS settings and connects over plain TCP instead.
+sub zmDbDsn {
+  my ($driver, $config, $options) = @_;
+  my $prefix = ($driver eq 'MariaDB') ? 'mariadb' : 'mysql';
+
+  my $dsn = 'DBI:'.$driver.':database='.$$config{ZM_DB_NAME};
+
+  my ( $host, $portOrSocket ) = ( $$config{ZM_DB_HOST} =~ /^([^:]+)(?::(.+))?$/ );
+  if ( defined($portOrSocket) ) {
+    if ( $portOrSocket =~ /^\// ) {
+      $dsn .= ';'.$prefix.'_socket='.$portOrSocket;
+    } else {
+      $dsn .= ';host='.$host.';port='.$portOrSocket;
+    }
+  } else {
+    $dsn .= ';host='.$$config{ZM_DB_HOST};
+  }
+
+  if ( $$config{ZM_DB_SSL_CA_CERT} ) {
+    $dsn .= join(';', '',
+        $prefix.'_ssl=1',
+        $prefix.'_ssl_ca_file='.$$config{ZM_DB_SSL_CA_CERT},
+        $prefix.'_ssl_client_key='.$$config{ZM_DB_SSL_CLIENT_KEY},
+        $prefix.'_ssl_client_cert='.$$config{ZM_DB_SSL_CLIENT_CERT}
+        );
+    # Identity-verify the server certificate when ZM_DB_SSL_VERIFY_SERVER_CERT
+    # is set: truthy verifies, false-y (0/false/no/off) allows a self-signed or
+    # non-matching cert. An empty/unset value leaves the driver default so
+    # existing installs are unchanged on upgrade.
+    my $verify = $$config{ZM_DB_SSL_VERIFY_SERVER_CERT};
+    if ( defined($verify) and ($verify ne '') ) {
+      $dsn .= ';'.$prefix.'_ssl_verify_server_cert=' . ((lc($verify) =~ /^(0|false|no|off)$/) ? '0' : '1');
+    }
+  }
+
+  # Callers name their driver parameters after DBD::mysql, which is all the code
+  # has ever had to talk to. Rename them for DBD::MariaDB rather than let it
+  # ignore them. Sorted so a given set of options always produces the same dsn.
+  if ( $options ) {
+    $dsn .= join(';', '', map {
+        (my $key = $_) =~ s/^mysql_/${prefix}_/;
+        $key.'='.$$options{$_};
+      } sort keys %{$options});
+  }
+
+  return $dsn;
+}
+
+# DBD::MariaDB is always utf8mb4. DBD::mysql has to be told, or the utf8 alias
+# gets us utf8mb3 and 4 byte characters are mangled.
+sub zmDbConnectAttributes {
+  my $driver = shift;
+  return { ($driver eq 'MariaDB') ? () : (mysql_enable_utf8mb4 => 1) };
+}
+
 sub zmDbConnect {
   my $force = shift;
   if ( $force ) {
@@ -78,46 +158,22 @@ sub zmDbConnect {
   my $options = shift;
 
   if ( ( !defined($dbh) ) or ! $dbh->ping() ) {
-    my ( $host, $portOrSocket ) = ( $ZoneMinder::Config::Config{ZM_DB_HOST} =~ /^([^:]+)(?::(.+))?$/ );
-    my $socket;
-
-    if ( defined($portOrSocket) ) {
-      if ( $portOrSocket =~ /^\// ) {
-        $socket = ';mysql_socket='.$portOrSocket;
-      } else {
-        $socket = ';host='.$host.';port='.$portOrSocket;
-      }
-    } else {
-      $socket = ';host='.$ZoneMinder::Config::Config{ZM_DB_HOST}; 
-    }
-
-    my $sslOptions = '';
-    if ( $ZoneMinder::Config::Config{ZM_DB_SSL_CA_CERT} ) {
-      $sslOptions = join(';', '',
-          'mysql_ssl=1',
-          'mysql_ssl_ca_file='.$ZoneMinder::Config::Config{ZM_DB_SSL_CA_CERT},
-          'mysql_ssl_client_key='.$ZoneMinder::Config::Config{ZM_DB_SSL_CLIENT_KEY},
-          'mysql_ssl_client_cert='.$ZoneMinder::Config::Config{ZM_DB_SSL_CLIENT_CERT}
-          );
-    }
+    my $driver = zmDbDriver();
 
     eval {
       $dbh = DBI->connect(
-        'DBI:mysql:database='.$ZoneMinder::Config::Config{ZM_DB_NAME}
-        .$socket . $sslOptions . ($options?join(';', '', map { $_.'='.$$options{$_} } keys %{$options} ) : '')
+        zmDbDsn($driver, \%ZoneMinder::Config::Config, $options)
         , $ZoneMinder::Config::Config{ZM_DB_USER}
         , $ZoneMinder::Config::Config{ZM_DB_PASS}
+        , zmDbConnectAttributes($driver)
         );
     };
     if ( !$dbh or $@ ) {
       Error("Error reconnecting to db: errstr:$DBI::errstr error val:$@");
     } else {
       $dbh->{AutoCommit} = 1;
-      Fatal('Can\'t set AutoCommit on in database connection')
+      Error('Can\'t set AutoCommit on in database connection')
         unless $dbh->{AutoCommit};
-      $dbh->{mysql_auto_reconnect} = 1;
-      Fatal('Can\'t set mysql_auto_reconnect on in database connection')
-        unless $dbh->{mysql_auto_reconnect};
       $dbh->trace( 0 );
     } # end if success connecting
   } # end if ! connected
@@ -177,20 +233,27 @@ sub zmDbGetMonitors {
 }
 
 sub zmSQLExecute {
+  Warning("zmSQLExecute is deprecated. Please update to use zmDbExecute");
+  return zmDbExecute(@_) ? 1 : undef;
+}
+
+sub zmDbExecute {
   my $sql = shift;
 
-  my $sth = $dbh->prepare_cached( $sql );
-  if ( ! $sth ) {
+  my $sth = $dbh->prepare_cached($sql);
+  if (!$sth) {
     Error("Can't prepare '$sql': ".$dbh->errstr());
     return undef;
   }
-  my $res = $sth->execute( @_ );
-  if ( ! $res ) {
-    Error("Can't execute '$sql': ".$sth->errstr());
+  my $res = $sth->execute(@_);
+  if (!$res) {
+    my ( $caller, undef, $line ) = caller;
+    Error("Can't execute '$sql' from $caller:$line: ".$sth->errstr());
     return undef;
   }
-  return 1;
-}
+  return ($sth, $res) if wantarray();
+  return $res;
+} 
 
 sub zmDbGetMonitor {
   zmDbConnect();
@@ -202,27 +265,13 @@ sub zmDbGetMonitor {
     return undef ;
   }
 
-  my $sql = 'SELECT * FROM Monitors WHERE Id = ?';
-  my $sth = $dbh->prepare_cached($sql);
-  if ( !$sth ) {
-    Error("Can't prepare '$sql': ".$dbh->errstr());
-    return undef;
-  }
-  my $res = $sth->execute($id);
-  if ( !$res ) {
-    Error("Can't execute '$sql': ".$sth->errstr());
-    return undef;
-  }
-  my $monitor = $sth->fetchrow_hashref();
-  $sth->finish();
-  return $monitor;
+  return zmDbFetchOne('SELECT * FROM Monitors WHERE Id = ?', $id);
 }
 
 sub zmDbGetMonitorAndControl {
   zmDbConnect();
 
   my $id = shift;
-
   return undef if !defined($id);
 
   my $sql = 'SELECT C.*,M.*,C.Protocol
@@ -230,19 +279,7 @@ sub zmDbGetMonitorAndControl {
     INNER JOIN Controls as C on (M.ControlId = C.Id)
     WHERE M.Id = ?'
     ;
-  my $sth = $dbh->prepare_cached($sql);
-  if ( !$sth ) {
-    Error("Can't prepare '$sql': ".$dbh->errstr());
-    return undef;
-  }
-  my $res = $sth->execute( $id );
-  if ( !$res ) {
-    Error("Can't execute '$sql': ".$sth->errstr());
-    return undef;
-  }
-  my $monitor = $sth->fetchrow_hashref();
-  $sth->finish();
-  return $monitor;
+  return zmDbFetchOne($sql, $id);
 }
 
 sub start_transaction {
@@ -265,16 +302,91 @@ sub end_transaction {
 	$d->{AutoCommit} = $ac;
 } # end sub end_transaction
 
+# Substitute ? placeholders in $sql with the given bind values for logging.
+# Does not rely on sprintf, so it is safe for SQL that contains literal %
+# characters (e.g. dynamic filter SQL with disk percent substitution or
+# LIKE '%foo%' patterns).
+sub _sql_with_bind_values {
+  my ($sql, @vals) = @_;
+  $sql =~ s{\?}{
+    my $v = shift @vals;
+    defined $v ? "'$v'" : 'NULL';
+  }ge;
+  return $sql;
+}
+
 # Basic execution of $dbh->do but with some pretty logging of the sql on error.
-# Returns 1 on success, 0 on error
+# Auto-retries on deadlock (MariaDB ER_LOCK_DEADLOCK = 1213) only when
+# AutoCommit is on, since inside a caller-managed transaction the caller has
+# to rebuild the whole TX.
 sub zmDbDo {
-	my $sql = shift;
-	if ( ! $dbh->do($sql, undef, @_) ) {
-		$sql =~ s/\?/'%s'/;
-		Error(sprintf("Failed $sql :", @_).$dbh->errstr());
-    return 0;
-	}
-  return 1;
+  my $sql = shift;
+  my @params = @_;
+  my $max_attempts = $dbh->{AutoCommit} ? 5 : 1;
+  my $rows;
+  for ( my $attempt = 1; $attempt <= $max_attempts; $attempt++ ) {
+    $rows = $dbh->do($sql, undef, @params);
+    last if defined $rows;
+
+    # In a caller-managed transaction, never issue ANY logging here that can
+    # write to the Logs table: ZoneMinder::Logger->logPrint INSERTs into
+    # Logs using the same $dbh, which would clear $dbh->err / $dbh->errstr
+    # before the caller reads them for rollback/retry. Bail silently — the
+    # caller owns the retry loop and is responsible for logging.
+    last if !$dbh->{AutoCommit};
+
+    my $err_code = $dbh->err() // 0;
+    if ( $err_code == 1213 and $attempt < $max_attempts ) { # 1213 = ER_LOCK_DEADLOCK
+      Debug("Deadlock on '"._sql_with_bind_values($sql, @params)."' attempt $attempt/$max_attempts, retrying");
+      select(undef, undef, undef, 0.05 * (1 << $attempt) + rand(0.05));
+      next;
+    }
+    Error('Failed '._sql_with_bind_values($sql, @params).' : '.$dbh->errstr());
+    last;
+  }
+  # Skip the success Debug when we're inside a caller-managed transaction:
+  # ZoneMinder::Logger->logPrint INSERTs into Logs on this same $dbh, which
+  # would add an extra write to a TX that's trying to be lock-minimal and
+  # could change $dbh->err / $dbh->errstr the caller will later inspect.
+  if ( defined $rows and $dbh->{AutoCommit} and ZoneMinder::Logger::logLevel() > INFO ) {
+    ($rows) = $rows =~ /^(.*)$/; # de-taint
+    Debug('Succeeded '._sql_with_bind_values($sql, @params)." : $rows rows affected");
+  }
+  return $rows;
+}
+
+sub zmDbFetchOne {
+  my $sql = shift;
+
+  Debug("$sql @_");
+  my $sth = $dbh->prepare_cached($sql);
+  if (!$sth) {
+    Error("Can't prepare '$sql': ".$dbh->errstr());
+    return undef;
+  }
+  my $res = $sth->execute(@_);
+  if (!$res) {
+    Error("Can't execute '$sql': ".$sth->errstr());
+    return undef;
+  }
+  my $row = $sth->fetchrow_hashref();
+  $sth->finish();
+  return $row;
+}
+
+sub zmDbSupportsFeature {
+  my $feature = shift;
+  my $row = zmDbFetchOne('SELECT VERSION()');
+  my ($version) = $$row{'VERSION()'} =~ /(^[0-9\.]+)/;
+  if ($feature eq 'skip_locked') {
+    if ($$row{'VERSION()'} =~ /MariaDB/) {
+      return version->parse($version) >= version->parse('10.6');
+    } else {
+      return version->parse($version) >= version->parse('8.0.1');
+    }
+  } else {
+    Warning("Unknown feature requested $feature");
+  }
 }
 
 1;
@@ -299,6 +411,8 @@ zmDbGetMonitors
 zmDbGetMonitor
 zmDbGetMonitorAndControl
 zmDbDo
+zmSQLExecute
+zmDbFetchOne
 
 =head1 AUTHOR
 
