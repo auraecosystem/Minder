@@ -14,15 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-// 
+//
 
-#include "zm.h"
-#include "zm_utils.h"
 #include "zm_rtsp_auth.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "zm_logger.h"
+#include "zm_utils.h"
+#include <cassert>
+#include <cstring>
 
 namespace zm {
 
@@ -56,57 +55,56 @@ void Authenticator::reset() {
   fAuthMethod = AUTH_UNDEFINED;
 }
 
-void Authenticator::authHandleHeader(std::string headerData) 
-{
+void Authenticator::authHandleHeader(std::string headerData) {
   const char* basic_match = "Basic ";
   const char* digest_match = "Digest ";
   size_t digest_match_len = strlen(digest_match);
   
   // Check if basic auth
-  if ( strncasecmp(headerData.c_str(),basic_match,strlen(basic_match)) == 0 ) {
+  if ( strncasecmp(headerData.c_str(), basic_match, strlen(basic_match)) == 0 ) {
     fAuthMethod = AUTH_BASIC;
     Debug(2, "Set authMethod to Basic");
   } 
   // Check if digest auth
-  else if (strncasecmp( headerData.c_str(),digest_match,digest_match_len ) == 0) {
+  else if ( strncasecmp(headerData.c_str(), digest_match, digest_match_len) == 0) {
     fAuthMethod = AUTH_DIGEST;
-    Debug( 2, "Set authMethod to Digest");
-    StringVector subparts = split(headerData.substr(digest_match_len, headerData.length() - digest_match_len), ",");
+    Debug(2, "Set authMethod to Digest");
+    StringVector subparts = Split(headerData.substr(digest_match_len, headerData.length() - digest_match_len), ",");
     // subparts are key="value"
     for ( size_t i = 0; i < subparts.size(); i++ ) {
-      StringVector kvPair = split(trimSpaces(subparts[i]), "=");
-      std::string key = trimSpaces(kvPair[0]);
+      StringVector kvPair = Split(TrimSpaces(subparts[i]), "=");
+      std::string key = TrimSpaces(kvPair[0]);
       if ( key == "realm" ) {
-        fRealm = trimSet(kvPair[1], "\"");
+        fRealm = Trim(kvPair[1], "\"");
         continue;
       }
       if ( key == "nonce" ) {
-        fNonce = trimSet(kvPair[1], "\"");
+        fNonce = Trim(kvPair[1], "\"");
         continue;
       }
       if ( key == "qop" ) {
-        fQop = trimSet(kvPair[1], "\"");
+        fQop = Trim(kvPair[1], "\"");
         continue;
       }
     }
     Debug(2, "Auth data completed. User: %s, realm: %s, nonce: %s, qop: %s",
 				username().c_str(), fRealm.c_str(), fNonce.c_str(), fQop.c_str());
   }
-}
+}  // end void Authenticator::authHandleHeader(std::string headerData)
 
 std::string Authenticator::quote( const std::string &src ) {
-  return replaceAll(replaceAll(src, "\\", "\\\\"), "\"", "\\\"");
+  return ReplaceAll(ReplaceAll(src, "\\", "\\\\"), "\"", "\\\"");
 }
 
-std::string Authenticator::getAuthHeader(std::string method, std::string uri) {
+std::string Authenticator::getAuthHeader(const std::string &method, const std::string &uri) {
   std::string result = "Authorization: ";
-  if (fAuthMethod == AUTH_BASIC) {
-    result += "Basic " + base64Encode( username() + ":" + password() );
-  } else if (fAuthMethod == AUTH_DIGEST) {
+  if ( fAuthMethod == AUTH_BASIC ) {
+    result += "Basic " + Base64Encode(username() + ":" + password());
+  } else if ( fAuthMethod == AUTH_DIGEST ) {
     result += std::string("Digest ") + 
           "username=\"" + quote(username()) + "\", realm=\"" + quote(realm()) + "\", " +
           "nonce=\"" + quote(nonce()) + "\", uri=\"" + quote(uri) + "\"";
-    if ( ! fQop.empty() ) {
+    if ( !fQop.empty() ) {
       result += ", qop=" + fQop;
       result += ", nc=" + stringtf("%08x",nc);
       result += ", cnonce=\"" + fCnonce + "\"";
@@ -130,13 +128,13 @@ std::string Authenticator::getAuthHeader(std::string method, std::string uri) {
   return result;
 }
 
-std::string Authenticator::computeDigestResponse(std::string &method, std::string &uri) {
+std::string Authenticator::computeDigestResponse(const std::string &method, const std::string &uri) {
 #if HAVE_DECL_MD5 || HAVE_DECL_GNUTLS_FINGERPRINT
   // The "response" field is computed as:
   //  md5(md5(<username>:<realm>:<password>):<nonce>:md5(<cmd>:<url>))
-  size_t md5len = 16;
-  unsigned char md5buf[md5len];
-  char md5HexBuf[md5len*2+1];
+  constexpr size_t md5len = 16;
+  uint8 md5buf[md5len];
+  char md5HexBuf[md5len * 2 + 1];
   
   // Step 1: md5(<username>:<realm>:<password>)
   std::string ha1Data = username() + ":" + realm() + ":" + password();
@@ -144,8 +142,10 @@ std::string Authenticator::computeDigestResponse(std::string &method, std::strin
 #if HAVE_DECL_MD5
   MD5((unsigned char*)ha1Data.c_str(), ha1Data.length(), md5buf);
 #elif HAVE_DECL_GNUTLS_FINGERPRINT
-  gnutls_datum_t md5dataha1 = { (unsigned char*)ha1Data.c_str(), (unsigned int)ha1Data.length() };
-  gnutls_fingerprint( GNUTLS_DIG_MD5, &md5dataha1, md5buf, &md5len );
+  gnutls_datum_t md5dataha1 = {(unsigned char *) ha1Data.c_str(), (unsigned int) ha1Data.length()};
+  size_t md5_len_tmp = md5len;
+  gnutls_fingerprint(GNUTLS_DIG_MD5, &md5dataha1, md5buf, &md5_len_tmp);
+  assert(md5_len_tmp == md5len);
 #endif
   for ( unsigned int j = 0; j < md5len; j++ ) {
     sprintf(&md5HexBuf[2*j], "%02x", md5buf[j] );
@@ -159,8 +159,10 @@ std::string Authenticator::computeDigestResponse(std::string &method, std::strin
 #if HAVE_DECL_MD5
   MD5((unsigned char*)ha2Data.c_str(), ha2Data.length(), md5buf );
 #elif HAVE_DECL_GNUTLS_FINGERPRINT
-  gnutls_datum_t md5dataha2 = { (unsigned char*)ha2Data.c_str(), (unsigned int)ha2Data.length() };
-  gnutls_fingerprint( GNUTLS_DIG_MD5, &md5dataha2, md5buf, &md5len );
+  gnutls_datum_t md5dataha2 = {(unsigned char *) ha2Data.c_str(), (unsigned int) ha2Data.length()};
+  md5_len_tmp = md5len;
+  gnutls_fingerprint(GNUTLS_DIG_MD5, &md5dataha2, md5buf, &md5_len_tmp);
+  assert(md5_len_tmp == md5len);
 #endif
   for ( unsigned int j = 0; j < md5len; j++ ) {
     sprintf( &md5HexBuf[2*j], "%02x", md5buf[j] );
@@ -180,8 +182,10 @@ std::string Authenticator::computeDigestResponse(std::string &method, std::strin
 #if HAVE_DECL_MD5
   MD5((unsigned char*)digestData.c_str(), digestData.length(), md5buf);
 #elif HAVE_DECL_GNUTLS_FINGERPRINT
-  gnutls_datum_t md5datadigest = { (unsigned char*)digestData.c_str(), (unsigned int)digestData.length() };
-  gnutls_fingerprint( GNUTLS_DIG_MD5, &md5datadigest, md5buf, &md5len );
+  gnutls_datum_t md5datadigest = {(unsigned char *) digestData.c_str(), (unsigned int) digestData.length()};
+  md5_len_tmp = md5len;
+  gnutls_fingerprint(GNUTLS_DIG_MD5, &md5datadigest, md5buf, &md5_len_tmp);
+  assert(md5_len_tmp == md5len);
 #endif
   for ( unsigned int j = 0; j < md5len; j++ ) {
     sprintf( &md5HexBuf[2*j], "%02x", md5buf[j] );
@@ -195,29 +199,29 @@ std::string Authenticator::computeDigestResponse(std::string &method, std::strin
 #endif // HAVE_DECL_MD5
 }
 
-void Authenticator::checkAuthResponse(std::string &response) {
+void Authenticator::checkAuthResponse(const std::string &response) {
   std::string authLine;
-  StringVector lines = split(response, "\r\n");
+  StringVector lines = Split(response, "\r\n");
   const char* authenticate_match = "WWW-Authenticate:";
   size_t authenticate_match_len = strlen(authenticate_match);
 
   for ( size_t i = 0; i < lines.size(); i++ ) {
     // stop at end of headers
-    if (lines[i].length()==0)
+    if ( lines[i].length() == 0 )
       break;
 
-    if (strncasecmp(lines[i].c_str(),authenticate_match,authenticate_match_len) == 0) {
+    if ( strncasecmp(lines[i].c_str(), authenticate_match, authenticate_match_len) == 0 ) {
       authLine = lines[i];
-      Debug( 2, "Found auth line at %d", i);
-      break;
+      Debug(2, "Found auth line at %zu:", i);
+      //break;
     }
   }
-  if (!authLine.empty()) {
-    Debug( 2, "Analyze auth line %s", authLine.c_str());
-    authHandleHeader( trimSpaces(authLine.substr(authenticate_match_len,authLine.length()-authenticate_match_len)) );
+  if ( !authLine.empty() ) {
+    Debug(2, "Analyze auth line %s", authLine.c_str());
+    authHandleHeader(TrimSpaces(authLine.substr(authenticate_match_len, authLine.length() - authenticate_match_len)));
   } else {
-    Debug( 2, "Didn't find auth line in %s", authLine.c_str());
+    Debug(2, "Didn't find auth line in %s", authLine.c_str());
   }
-}
+}  // end void Authenticator::checkAuthResponse(std::string &response)
 
 } // namespace zm

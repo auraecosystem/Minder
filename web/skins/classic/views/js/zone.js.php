@@ -6,7 +6,6 @@
   global $selfIntersecting;
   global $streamMode;
   global $connkey;
-  global $streamSrc;
 ?>
 
 var presets = new Object();
@@ -58,6 +57,18 @@ zone['Points'][<?php echo $i ?>] = { 'x': <?php echo $newZone['Points'][$i]['x']
 var maxX = <?php echo $monitor->ViewWidth()-1 ?>;
 var maxY = <?php echo $monitor->ViewHeight()-1 ?>;
 var monitorArea = <?php echo $monitor->ViewWidth() * $monitor->ViewHeight() ?>;
+
+var monitorData = new Array();
+monitorData[monitorData.length] = {
+  'id': <?php echo $monitor->Id() ?>,
+  'connKey': <?php echo $monitor->connKey() ?>,
+  'width': <?php echo $monitor->ViewWidth() ?>,
+  'height':<?php echo $monitor->ViewHeight() ?>,
+  'url': '<?php echo $monitor->UrlToIndex( ZM_MIN_STREAMING_PORT ? ($monitor->Id() + ZM_MIN_STREAMING_PORT) : '') ?>',
+  'type': '<?php echo $monitor->Type() ?>',
+  'refresh': '<?php echo $monitor->Refresh() ?>'
+};
+
 var selfIntersecting = <?php echo $selfIntersecting ? 'true' : 'false' ?>;
 
 var selfIntersectingString = '<?php echo addslashes(translate('SelfIntersecting')) ?>';
@@ -76,32 +87,10 @@ var minBlobLtMinFilterString = '<?php echo addslashes(translate('MinBlobLtMinFil
 var minBlobsUnsetString = '<?php echo addslashes(translate('MinBlobsUnset')) ?>';
 var minBlobsLtMaxString = '<?php echo addslashes(translate('MinBlobsLtMax')) ?>';
 
+var deleteString = "<?php echo translate('Delete') ?>";
 //
 // Imported from watch.js.php and modified for new zone edit view
 //
-
-var STATE_IDLE = <?php echo STATE_IDLE ?>;
-var STATE_PREALARM = <?php echo STATE_PREALARM ?>;
-var STATE_ALARM = <?php echo STATE_ALARM ?>;
-var STATE_ALERT = <?php echo STATE_ALERT ?>;
-var STATE_TAPE = <?php echo STATE_TAPE ?>;
-
-var stateStrings = new Array();
-stateStrings[STATE_IDLE] = "<?php echo translate('Idle') ?>";
-stateStrings[STATE_PREALARM] = "<?php echo translate('Idle') ?>";
-stateStrings[STATE_ALARM] = "<?php echo translate('Alarm') ?>";
-stateStrings[STATE_ALERT] = "<?php echo translate('Alert') ?>";
-stateStrings[STATE_TAPE] = "<?php echo translate('Record') ?>";
-
-var pauseString = "<?php echo translate('Pause') ?>";
-var playString = "<?php echo translate('Play') ?>";
-
-var deleteString = "<?php echo translate('Delete') ?>";
-
-var CMD_PAUSE = <?php echo CMD_PAUSE ?>;
-var CMD_PLAY = <?php echo CMD_PLAY ?>;
-var CMD_STOP = <?php echo CMD_STOP ?>;
-var CMD_QUERY = <?php echo CMD_QUERY ?>;
 
 var SCALE_BASE = <?php echo SCALE_BASE ?>;
 
@@ -114,16 +103,10 @@ var connKey = '<?php echo $connkey ?>';
 var monitorId = <?php echo $monitor->Id() ?>;
 var monitorUrl = '<?php echo ( $monitor->UrlToIndex() ) ?>';
 
-var streamSrc = "<?php echo preg_replace( '/&amp;/', '&', $streamSrc ) ?>";
-
 var statusRefreshTimeout = <?php echo 1000*ZM_WEB_REFRESH_STATUS ?>;
 var imageRefreshTimeout = <?php echo 1000*ZM_WEB_REFRESH_IMAGE ?>;
 
-var canEditMonitors = <?php echo canEdit( 'Monitors' )?'true':'false' ?>;
 var canStreamNative = <?php echo canStreamNative()?'true':'false' ?>;
 
-var canPlayPauseAudio = Browser.ie;
-
 var refreshApplet = <?php echo (canStreamApplet() && $streamMode == "jpeg")?'true':'false' ?>;
-var appletRefreshTime = <?php echo ZM_RELOAD_CAMBOZOLA ?>;
 

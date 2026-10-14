@@ -54,23 +54,6 @@
 // Example
 header( "Content-Type: text/html; charset=utf-8" );
 
-// You may need to change your locale here if your default one is incorrect for the
-// language described in this file, or if you have multiple languages supported.
-// If you do need to change your locale, be aware that the format of this function
-// is subtlely different in versions of PHP before and after 4.3.0, see
-// http://uk2.php.net/manual/en/function.setlocale.php for details.
-// Also be aware that changing the whole locale may affect some floating point or decimal 
-// arithmetic in the database, if this is the case change only the individual locale areas
-// that don't affect this rather than all at once. See the examples below.
-// Finally, depending on your setup, PHP may not enjoy have multiple locales in a shared 
-// threaded environment, if you get funny errors it may be this.
-//
-// Examples
-// setlocale( 'LC_ALL', 'en_GB' ); All locale settings pre-4.3.0
-// setlocale( LC_ALL, 'en_GB' ); All locale settings 4.3.0 and after
-// setlocale( LC_CTYPE, 'en_GB' ); Character class settings 4.3.0 and after
-// setlocale( LC_TIME, 'en_GB' ); Date and time formatting 4.3.0 and after
-
 // Simple String Replacements
 $SLANG = array(
     '24BitColour'          => '24-Bit-Farbe',
@@ -153,7 +136,7 @@ $SLANG = array(
     'BadFrameSkip'         => 'Der Auslasszähler für Frames muss ganzzahlig 0 oder größer sein',
     'BadHeight'            => 'Die Höhe muss auf einen gültigen Wert eingestellt sein',
     'BadHost'              => 'Der Host muss auf eine gültige IP-Adresse oder einen Hostnamen (ohne http://) eingestellt sein',
-    'BadImageBufferCount'  => 'Die Größe des Bildpuffers muss ganzzahlig 10 oder größer sein',
+    'BadImageBufferCount'  => 'Die Größe des Bildpuffers muss ganzzahlig 2 oder größer sein',
     'BadLabelX'            => 'Die x-Koordinate der Bezeichnung muss ganzzahlig 0 oder größer sein',
     'BadLabelY'            => 'Die y-Koordinate der Bezeichnung muss ganzzahlig 0 oder größer sein',
     'BadMaxFPS'            => 'Maximum-FPS muss eine positive Ganzzahl oder eine Gleitkommazahl sein',
@@ -949,7 +932,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 

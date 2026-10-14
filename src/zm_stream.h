@@ -20,19 +20,27 @@
 #ifndef ZM_STREAM_H
 #define ZM_STREAM_H
 
-#include <sys/un.h>
-#include <sys/socket.h>
-
-#include "zm.h"
+#include "zm_box.h"
+#include "zm_logger.h"
 #include "zm_mpeg.h"
+#include <memory>
+#include <sys/un.h>
 
+class Image;
 class Monitor;
 
 #define TV_2_FLOAT( tv ) ( double((tv).tv_sec) + (double((tv).tv_usec) / 1000000.0) )
+#define BOUNDARY "ZoneMinderFrame"
 
 class StreamBase {
 public:
-  typedef enum { STREAM_JPEG, STREAM_RAW, STREAM_ZIP, STREAM_SINGLE, STREAM_MPEG } StreamType;
+  typedef enum {
+    STREAM_JPEG,
+    STREAM_RAW,
+    STREAM_ZIP,
+    STREAM_SINGLE,
+    STREAM_MPEG
+  } StreamType;
 
 protected:
   static const int MAX_STREAM_DELAY = 5; // Seconds
@@ -56,11 +64,37 @@ protected:
     char msg_data[256];
   } DataMsg;
 
-  typedef enum { MSG_CMD=1, MSG_DATA_WATCH, MSG_DATA_EVENT } MsgType;
-  typedef enum { CMD_NONE=0, CMD_PAUSE, CMD_PLAY, CMD_STOP, CMD_FASTFWD, CMD_SLOWFWD, CMD_SLOWREV, CMD_FASTREV, CMD_ZOOMIN, CMD_ZOOMOUT, CMD_PAN, CMD_SCALE, CMD_PREV, CMD_NEXT, CMD_SEEK, CMD_VARPLAY, CMD_GET_IMAGE, CMD_QUIT, CMD_QUERY=99 } MsgCommand;
+  typedef enum {
+    MSG_CMD=1,
+    MSG_DATA_WATCH,
+    MSG_DATA_EVENT
+  } MsgType;
+
+  typedef enum {
+    CMD_NONE=0,
+    CMD_PAUSE,
+    CMD_PLAY,
+    CMD_STOP,
+    CMD_FASTFWD,
+    CMD_SLOWFWD,
+    CMD_SLOWREV,
+    CMD_FASTREV,
+    CMD_ZOOMIN,
+    CMD_ZOOMOUT,
+    CMD_PAN,
+    CMD_SCALE,
+    CMD_PREV,
+    CMD_NEXT,
+    CMD_SEEK,
+    CMD_VARPLAY,
+    CMD_GET_IMAGE,
+    CMD_QUIT,
+    CMD_QUERY=99
+  } MsgCommand;
 
 protected:
-  Monitor *monitor;
+  int monitor_id;
+  std::shared_ptr<Monitor> monitor;
 
   StreamType type;
   const char *format;
@@ -69,12 +103,12 @@ protected:
   int last_scale;
   int zoom;
   int last_zoom;
-  double maxfps;
+  Box last_crop;
   int bitrate;
   unsigned short last_x, last_y;
   unsigned short x, y;
-
-protected:
+  bool send_analysis;
+  bool send_objdetect;
   int connkey;
   int sd;
   char loc_sock_path[108];
@@ -83,16 +117,20 @@ protected:
   struct sockaddr_un rem_addr;
   char sock_path_lock[108];
   int lock_fd;
-
-protected:
   bool paused;
   int step;
 
   struct timeval now;
   struct timeval last_comm_update;
 
-  double base_fps;
-  double effective_fps;
+  double maxfps;
+  double base_fps;        // Should be capturing fps, hence a rough target
+  double effective_fps;   // Target fps after taking max_fps into account
+  double actual_fps;      // sliding calculated actual streaming fps achieved
+  struct timeval last_fps_update;
+  int frame_count;      // Count of frames sent
+  int last_frame_count; // Used in calculating actual_fps from frame_count - last_frame_count
+
   int frame_mod;
 
   double last_frame_sent;
@@ -104,78 +142,98 @@ protected:
 
   CmdMsg msg;
 
+  unsigned char *temp_img_buffer;     // Used when encoding or sending file data
+  size_t temp_img_buffer_size;
+
 protected:
-  bool loadMonitor( int monitor_id );
+  bool loadMonitor(int monitor_id);
   bool checkInitialised();
-  void updateFrameRate( double fps );
-  Image *prepareImage( Image *image );
-  bool sendTextFrame( const char *text );
+  void updateFrameRate(double fps);
+  Image *prepareImage(Image *image);
   bool checkCommandQueue();
-  virtual void processCommand( const CmdMsg *msg )=0;
+  virtual void processCommand(const CmdMsg *msg)=0;
 
 public:
-  StreamBase() {
-    monitor = 0;
-
-    type = DEFAULT_TYPE;
-    format = "";
-    replay_rate = DEFAULT_RATE;
-    last_scale = scale = DEFAULT_SCALE;
-    last_zoom = zoom = DEFAULT_ZOOM;
-    maxfps = DEFAULT_MAXFPS;
-    bitrate = DEFAULT_BITRATE;
-
-    paused = false;
-    step = 0;
-    last_x = x = 0;
-    last_y = y = 0;
-
-    connkey = 0;
-    sd = -1;
-    lock_fd = 0;
-    memset( &loc_sock_path, 0, sizeof(loc_sock_path) );
-    memset( &loc_addr, 0, sizeof(loc_addr) );
-    memset( &rem_sock_path, 0, sizeof(rem_sock_path) );
-    memset( &rem_addr, 0, sizeof(rem_addr) );
-    memset( &sock_path_lock, 0, sizeof(sock_path_lock) );
-
-    base_fps = 0.0;
-    effective_fps = 0.0;
-    frame_mod = 1;
+  StreamBase(): 
+    monitor_id(0),
+    monitor(nullptr),
+    type(DEFAULT_TYPE),
+    format(""),
+    replay_rate(DEFAULT_RATE),
+    scale(DEFAULT_SCALE),
+    last_scale(DEFAULT_SCALE),
+    zoom(DEFAULT_ZOOM),
+    last_zoom(DEFAULT_ZOOM),
+    bitrate(DEFAULT_BITRATE),
+    last_x(0),
+    last_y(0),
+    x(0),
+    y(0),
+    send_analysis(false),
+    send_objdetect(false),
+    connkey(0),
+    sd(-1),
+    lock_fd(0),
+    paused(false),
+    step(0),
+    maxfps(DEFAULT_MAXFPS),
+    base_fps(0.0),
+    effective_fps(0.0),
+    actual_fps(0.0),
+    last_fps_update({}),
+    frame_count(0),
+    last_frame_count(0),
+    frame_mod(1),
+    temp_img_buffer(nullptr),
+    temp_img_buffer_size(0)
+  {
+    memset(&loc_sock_path, 0, sizeof(loc_sock_path));
+    memset(&loc_addr, 0, sizeof(loc_addr));
+    memset(&rem_sock_path, 0, sizeof(rem_sock_path));
+    memset(&rem_addr, 0, sizeof(rem_addr));
+    memset(&sock_path_lock, 0, sizeof(sock_path_lock));
 
 #if HAVE_LIBAVCODEC   
-    vid_stream = 0;
+    vid_stream = nullptr;
 #endif // HAVE_LIBAVCODEC   
     last_frame_sent = 0.0;
-    last_frame_timestamp = (struct timeval){0};
+    last_frame_timestamp = {};
     msg = { 0, { 0 } };
   }
   virtual ~StreamBase();
 
-  void setStreamType( StreamType p_type ) {
+  void setStreamType(StreamType p_type) {
     type = p_type;
+#if ! HAVE_ZLIB_H
+    if ( type == STREAM_ZIP ) {
+      Error("zlib is required for zipped images. Falling back to raw image");
+      type = STREAM_RAW;
+    }
+#endif
+
   }
-  void setStreamFormat( const char *p_format ) {
+  void setStreamFormat(const char *p_format) {
     format = p_format;
   }
-  void setStreamScale( int p_scale ) {
+  void setStreamScale(int p_scale) {
     scale = p_scale;
-    if ( ! scale )
+    if ( !scale )
       scale = DEFAULT_SCALE;
   }
-  void setStreamReplayRate( int p_rate ) {
-    Debug(2,"Setting replay_rate %d", p_rate);
+  void setStreamReplayRate(int p_rate) {
+    Debug(2, "Setting replay_rate %d", p_rate);
     replay_rate = p_rate;
   }
-  void setStreamMaxFPS( double p_maxfps ) {
+  void setStreamMaxFPS(double p_maxfps) {
     maxfps = p_maxfps;
   }
-  void setStreamBitrate( int p_bitrate ) {
+  void setStreamBitrate(int p_bitrate) {
     bitrate = p_bitrate;
   }
-  void setStreamQueue( int p_connkey ) {
+  void setStreamQueue(int p_connkey) {
     connkey = p_connkey;
   }
+  bool sendTextFrame(const char *text);
   virtual void openComms();
   virtual void closeComms();
   virtual void runStream()=0;

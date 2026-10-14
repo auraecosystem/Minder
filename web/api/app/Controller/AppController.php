@@ -83,7 +83,7 @@ class AppController extends Controller {
             throw new UnauthorizedException(__($retstatus));
             return;
           } 
-          ZM\Info("Login successful for user \"$username\"");
+          ZM\Debug("Login successful for user \"$username\"");
         }
       }
 
@@ -100,12 +100,12 @@ class AppController extends Controller {
           }
           generateAuthHash(ZM_AUTH_HASH_IPS);
           session_write_close();
-        } else if ( $_COOKIE['ZMSESSID'] and !$user ) {
+        } else if ( isset($_COOKIE['ZMSESSID']) and !$user ) {
           # Have a cookie set, try to load user by session
           if ( ! is_session_started() )
             zm_session_start();
 
-          ZM\Logger::Debug(print_r($_SESSION, true));
+          ZM\Debug(print_r($_SESSION, true));
           $user = userFromSession();
           session_write_close();
         }

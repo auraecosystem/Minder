@@ -18,7 +18,7 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 
-if ( !canEdit('Monitors') ) {
+if (!canEdit('Monitors')) {
   $view = 'error';
   return;
 }
@@ -31,11 +31,9 @@ function probeV4L() {
   $command = getZmuCommand(' --query --device');
   if ( !empty($_REQUEST['device']) )
     $command .= '='.escapeshellarg($_REQUEST['device']);
-
   $result = exec(escapeshellcmd($command), $output, $status);
-  if ( $status ) {
-    ZM\Error("Unable to probe local cameras using $command, status is '$status' " . implode("\n",$output));
-    return $cameras;
+  if ($status) {
+    ZM\Warning("Errors while probe local cameras using $command, status is '$status' " . implode("\n", $output));
   }
 
   $monitors = array();
@@ -321,28 +319,26 @@ $focusWindow = true;
 xhtmlHeaders(__FILE__, translate('MonitorProbe') );
 ?>
 <body>
+  <?php echo getNavBarHTML() ?>
   <div id="page">
-    <div id="header">
-      <h2><?php echo translate('MonitorProbe') ?></h2>
-    </div>
+    <h2><?php echo translate('MonitorProbe') ?></h2>
     <div id="content">
-      <form name="contentForm" id="contentForm" method="post" action="?">
+      <form name="contentForm" id="contentForm" method="get" action="?">
         <input type="hidden" name="view" value="none"/>
-        <input type="hidden" name="mid" value="<?php echo validNum($_REQUEST['mid']) ?>"/>
+        <input type="hidden" name="mid" value="<?php echo isset($_REQUEST['mid'])?validNum($_REQUEST['mid']):'' ?>"/>
         <p>
           <?php echo translate('MonitorProbeIntro') ?>
         </p>
         <p>
           <label for="probe"><?php echo translate('DetectedCameras') ?></label>
-          <?php echo htmlSelect('probe', $cameras, null, array('data-on-change-this'=>'configureButtons(this)')); ?>
+          <?php echo htmlSelect('probe', $cameras, null, array('data-on-change-this'=>'configureButtons')); ?>
         </p>
         <div id="contentButtons">
         <button type="button" name="saveBtn" value="Save" data-on-click-this="submitCamera" disabled="disabled">
         <?php echo translate('Save') ?></button>
-        <button type="button" data-on-click="closeWindow"><?php echo translate('Cancel') ?></button>
+        <button type="button" data-on-click="backWindow"><?php echo translate('Cancel') ?></button>
         </div>
       </form>
     </div>
   </div>
-</body>
-</html>
+<?php xhtmlFooter() ?>

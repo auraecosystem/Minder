@@ -29,14 +29,15 @@ $filterbar = ob_get_contents();
 ob_end_clean();
 
 $options = array();
+$options['mode'] = 'single';
 
 if ( empty($_REQUEST['mode']) ) {
   if ( canStream() )
-    $options['mode'] = 'stream';
+    $mode = 'stream';
   else
-    $options['mode'] = 'still';
+    $mode = 'still';
 } else {
-  $options['mode'] = validHtmlStr($_REQUEST['mode']);
+  $mode = validHtmlStr($_REQUEST['mode']);
 }
 
 $widths = array(
@@ -78,7 +79,6 @@ foreach( $displayMonitors as &$row ) {
     $heights[$row['Height'].'px'] = $row['Height'].'px';
   }
 
-  $row['connKey'] = generateConnKey();
   $monitors[] = new ZM\Monitor($row);
   unset($row);
 } # end foreach Monitor
@@ -122,8 +122,6 @@ if ( isset($_COOKIE['zmCycleHeight']) and $_COOKIE['zmCycleHeight'] ) {
 
 session_write_close();
 
-ZM\Logger::Debug(print_r($options,true));
-
 noCacheHeaders();
 xhtmlHeaders(__FILE__, translate('CycleWatch'));
 ?>
@@ -132,7 +130,7 @@ xhtmlHeaders(__FILE__, translate('CycleWatch'));
     <?php echo $navbar = getNavBarHTML(); ?>
     <div id="header">
       <div id="headerButtons">
-<?php if ( $options['mode'] == 'stream' ) { ?>
+<?php if ( $mode == 'stream' ) { ?>
         <a href="?view=<?php echo $view ?>&amp;mode=still&amp;mid=<?php echo $monitor ? $monitor->Id() : '' ?>"><?php echo translate('Stills') ?></a>
 <?php } else { ?>
         <a href="?view=<?php echo $view ?>&amp;mode=stream&amp;mid=<?php echo $monitor ? $monitor->Id() : '' ?>"><?php echo translate('Stream') ?></a>
@@ -146,37 +144,52 @@ xhtmlHeaders(__FILE__, translate('CycleWatch'));
       </div>
       <div id="sizeControl">
         <span id="widthControl">
-          <label><?php echo translate('Width') ?>:</label>
-          <?php echo htmlSelect('width', $widths, $options['width'], array('data-on-change-this'=>'changeSize') ); ?>
+          <label><?php echo translate('Width') ?></label>
+          <?php echo htmlSelect('width', $widths, $options['width'], array('id'=>'width', 'data-on-change-this'=>'changeSize') ); ?>
         </span>
         <span id="heightControl">
-          <label><?php echo translate('Height') ?>:</label>
-          <?php echo htmlSelect('height', $heights, $options['height'], array('data-on-change-this'=>'changeSize') ); ?>
+          <label><?php echo translate('Height') ?></label>
+          <?php echo htmlSelect('height', $heights, $options['height'], array('id'=>'height', 'data-on-change-this'=>'changeSize') ); ?>
         </span>
         <span id="scaleControl">
-          <label><?php echo translate('Scale') ?>:</label>
-          <?php echo htmlSelect('scale', $scales, $options['scale'], array('data-on-change-this'=>'changeScale') ); ?>
+          <label><?php echo translate('Scale') ?></label>
+          <?php echo htmlSelect('scale', $scales, $options['scale'], array('id'=>'scale', 'data-on-change-this'=>'changeScale') ); ?>
         </span>
       </div>
     </div>
-    <div id="content">
-      <div id="imageFeed">
-      <?php 
-        if ( $monitor ) {
-          echo getStreamHTML($monitor, $options);
-        } else {
-          echo 'There are no monitors to view.';
-        }
-      ?>
-      </div>
+    <div class="container-fluid h-100">
+      <div class="row flex-nowrap h-100" id="content">
+        <nav id="sidebar" class="h-100">
+          <ul class="nav nav-pills flex-column h-100">
+  <?php
+  foreach ( $monitors as $m ) {
+            echo '<li class="nav-item"><a class="nav-link'.( $m->Id() == $monitor->Id() ? ' active' : '' ).'" href="?view=cycle&amp;mid='.$m->Id().'">'.$m->Name().'</a></li>';
+  }
+  ?>
+          </ul>
+        </nav>
+        <div class="container-fluid col-sm-offset-2 h-100 pr-0">
+          <div class="monitor" id="monitor<?php echo $monitor->Id() ?>">
+            <div id="imageFeed<?php echo $monitor->Id() ?>" class="imageFeed">
+          <?php 
+            if ( $monitor ) {
+              echo getStreamHTML($monitor, $options);
+            } else {
+              echo 'There are no monitors to view.';
+            }
+          ?>
+            </div>
+          </div>
 
-      <div id="buttons" class="buttons">
-        <button type="button" value="&lt;" id="prevBtn" title="<?php echo translate('PreviousMonitor') ?>" class="active" data-on-click-true="cyclePrev">&lt;&lt;</button>
-        <button type="button" value="||" id="pauseBtn" title="<?php echo translate('PauseCycle') ?>" class="active" data-on-click-true="cyclePause">||</button>
-        <button type="button" value="|&gt;" id="playBtn" title="<?php echo translate('PlayCycle') ?>" class="inactive" disabled="disabled" data-on-click-true="cycleStart">|&gt;</button>
-        <button type="button" value="&gt;" id="nextBtn" title="<?php echo translate('NextMonitor') ?>" class="active" data-on-click-true="cycleNext">&gt;&gt;</button>
-      </div>
+          <div id="buttons" class="buttons">
+            <button type="button" value="&lt;" id="prevBtn" title="<?php echo translate('PreviousMonitor') ?>" class="active" data-on-click-true="cyclePrev">&lt;&lt;</button>
+            <button type="button" value="||" id="pauseBtn" title="<?php echo translate('PauseCycle') ?>" class="active" data-on-click-true="cyclePause">||</button>
+            <button type="button" value="|&gt;" id="playBtn" title="<?php echo translate('PlayCycle') ?>" class="inactive" disabled="disabled" data-on-click-true="cycleStart">|&gt;</button>
+            <button type="button" value="&gt;" id="nextBtn" title="<?php echo translate('NextMonitor') ?>" class="active" data-on-click-true="cycleNext">&gt;&gt;</button>
+          </div>
 
+        </div>
+      </div>
     </div>
-  </div>
+  <script src="<?php echo cache_bust('js/MonitorStream.js') ?>"></script>
 <?php xhtmlFooter() ?>

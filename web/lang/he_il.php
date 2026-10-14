@@ -52,23 +52,6 @@
 // Example
 header( "Content-Type: text/html; charset=UTF-8" );
 
-// You may need to change your locale here if your default one is incorrect for the
-// language described in this file, or if you have multiple languages supported.
-// If you do need to change your locale, be aware that the format of this function
-// is subtlely different in versions of PHP before and after 4.3.0, see
-// http://uk2.php.net/manual/en/function.setlocale.php for details.
-// Also be aware that changing the whole locale may affect some floating point or decimal 
-// arithmetic in the database, if this is the case change only the individual locale areas
-// that don't affect this rather than all at once. See the examples below.
-// Finally, depending on your setup, PHP may not enjoy have multiple locales in a shared 
-// threaded environment, if you get funny errors it may be this.
-//
-// Examples
-// setlocale( 'LC_ALL', 'he_IL' ); All locale settings pre-4.3.0
-setlocale( LC_ALL, 'he_IL' ); //All locale settings 4.3.0 and after
-// setlocale( LC_CTYPE, 'he_IL' ); Character class settings 4.3.0 and after
-// setlocale( LC_TIME, 'he_IL' ); Date and time formatting 4.3.0 and after
-
 // Simple String Replacements
 $SLANG = array(
     '24BitColour'          => 'צבע 24 ביט',
@@ -151,7 +134,7 @@ $SLANG = array(
     'BadFrameSkip'         => 'Frame skip count must be an integer of zero or more',
     'BadHeight'            => 'Height must be set to a valid value',
     'BadHost'              => 'Host must be set to a valid ip address or hostname, do not include http://',
-    'BadImageBufferCount'  => 'Image buffer size must be an integer of 10 or more',
+    'BadImageBufferCount'  => 'Image buffer size must be an integer of 2 or more',
     'BadLabelX'            => 'Label X co-ordinate must be set to an integer of zero or more',
     'BadLabelY'            => 'Label Y co-ordinate must be set to an integer of zero or more',
     'BadMaxFPS'            => 'Maximum FPS must be a positive integer or floating point value',
@@ -946,7 +929,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 

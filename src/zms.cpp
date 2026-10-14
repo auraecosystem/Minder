@@ -17,43 +17,50 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 
-#include <sys/ipc.h>
-#include <sys/msg.h>
-#include <cinttypes>
-#include <string>
-
 #include "zm.h"
 #include "zm_db.h"
 #include "zm_user.h"
 #include "zm_signal.h"
-#include "zm_monitor.h"
 #include "zm_monitorstream.h"
 #include "zm_eventstream.h"
-#include "zm_fifo.h"
+#include "zm_fifo_stream.h"
+#include <string>
+#include <unistd.h>
 
 bool ValidateAccess(User *user, int mon_id) {
   bool allowed = true;
 
-  if ( mon_id > 0 ) {
-    if ( user->getStream() < User::PERM_VIEW )
+  if (mon_id > 0) {
+    if (user->getStream() < User::PERM_VIEW) {
       allowed = false;
-    if ( !user->canAccess(mon_id) )
+      Warning("Insufficient privileges for request user %d %s for monitor %d, user does not have permission to stream live view.",
+          user->Id(), user->getUsername(), mon_id);
+    } else if (!user->canAccess(mon_id)) {
       allowed = false;
-  } else {
-    if ( user->getEvents() < User::PERM_VIEW )
-      allowed = false;
-  }
-  if ( !allowed ) {
-    Error("Insufficient privileges for request user %d %s for monitor %d",
-      user->Id(), user->getUsername(), mon_id);
+      Warning("Insufficient privileges for request user %d %s for monitor %d, user does not have permission view this monitor.",
+          user->Id(), user->getUsername(), mon_id);
+    }
+  } else if (user->getEvents() < User::PERM_VIEW) {
+    allowed = false;
+    Warning("Insufficient privileges for request user %d %s, user does not have permission view events.",
+        user->Id(), user->getUsername());
   }
   return allowed;
 }
 
+int exit_zms(int exit_code) {
+  Debug(1, "Terminating");
+  Image::Deinitialise();
+  dbQueue.stop();
+  zmDbClose();
+  logTerm();
+  exit(exit_code);
+  return exit_code;
+}
 int main(int argc, const char *argv[], char **envp) {
   self = argv[0];
 
-  srand(getpid() * time(0));
+  srand(getpid() * time(nullptr));
 
   enum { ZMS_UNKNOWN, ZMS_MONITOR, ZMS_EVENT, ZMS_FIFO } source = ZMS_UNKNOWN;
   enum { ZMS_JPEG, ZMS_MPEG, ZMS_RAW, ZMS_ZIP, ZMS_SINGLE } mode = ZMS_JPEG;
@@ -86,99 +93,110 @@ int main(int argc, const char *argv[], char **envp) {
     nph = true;
   }
 
-  zmLoadConfig();
   char log_id_string[32] = "zms";
   logInit(log_id_string);
+  zmLoadStaticConfig();
+  zmDbConnect();
+  zmLoadDBConfig();
+  logInit(log_id_string);
+
   for (char **env = envp; *env != 0; env++) {
     char *thisEnv = *env;
     Debug(1, "env: %s", thisEnv);
   }
 
   const char *query = getenv("QUERY_STRING");
-  if ( query ) {
-    Debug(1, "Query: %s", query);
-
-    char temp_query[1024];
-    strncpy(temp_query, query, sizeof(temp_query)-1);
-    char *q_ptr = temp_query;
-    char *parms[16];  // Shouldn't be more than this
-    int parm_no = 0;
-    while ( (parm_no < 16) && (parms[parm_no] = strtok(q_ptr, "&")) ) {
-      parm_no++;
-      q_ptr = NULL;
-    }
-
-    for ( int p = 0; p < parm_no; p++ ) {
-      char *name = strtok(parms[p], "=");
-      char const *value = strtok(NULL, "=");
-      if ( !value )
-        value = "";
-      if ( !strcmp(name, "source") ) {
-        source = !strcmp(value, "event")?ZMS_EVENT:ZMS_MONITOR;
-        if ( !strcmp(value, "fifo") )
-          source = ZMS_FIFO;
-      } else if ( !strcmp(name, "mode") ) {
-        mode = !strcmp(value, "jpeg")?ZMS_JPEG:ZMS_MPEG;
-        mode = !strcmp(value, "raw")?ZMS_RAW:mode;
-        mode = !strcmp(value, "zip")?ZMS_ZIP:mode;
-        mode = !strcmp(value, "single")?ZMS_SINGLE:mode;
-      } else if ( !strcmp(name, "format") ) {
-        strncpy( format, value, sizeof(format) );
-      } else if ( !strcmp(name, "monitor") ) {
-        monitor_id = atoi(value);
-        if ( source == ZMS_UNKNOWN )
-          source = ZMS_MONITOR;
-      } else if ( !strcmp(name, "time") ) {
-        event_time = atoi(value);
-      } else if ( !strcmp(name, "event") ) {
-        event_id = strtoull(value, NULL, 10);
-        source = ZMS_EVENT;
-      } else if ( !strcmp(name, "frame") ) {
-        frame_id = strtoull(value, NULL, 10);
-        source = ZMS_EVENT;
-      } else if ( !strcmp(name, "scale") ) {
-        scale = atoi(value);
-      } else if ( !strcmp(name, "rate") ) {
-        rate = atoi(value);
-      } else if ( !strcmp(name, "maxfps") ) {
-        maxfps = atof(value);
-      } else if ( !strcmp(name, "bitrate") ) {
-        bitrate = atoi(value);
-      } else if ( !strcmp(name, "ttl") ) {
-        ttl = atoi(value);
-      } else if ( !strcmp(name, "replay") ) {
-        if ( !strcmp(value, "gapless") ) {
-          replay = EventStream::MODE_ALL_GAPLESS;
-        } else if ( !strcmp(value, "all") ) {
-          replay = EventStream::MODE_ALL;
-        } else if ( !strcmp(value, "none") ) {
-          replay = EventStream::MODE_NONE;
-        } else if ( !strcmp(value, "single") ) {
-          replay = EventStream::MODE_SINGLE;
-        } else {
-          Error("Unsupported value %s for replay, defaulting to none", value);
-        }
-      } else if ( !strcmp(name, "connkey") ) {
-        connkey = atoi(value);
-      } else if ( !strcmp(name, "buffer") ) {
-        playback_buffer = atoi(value);
-      } else if ( !strcmp(name, "auth") ) {
-        strncpy(auth, value, sizeof(auth)-1);
-      } else if ( !strcmp(name, "token") ) {
-        jwt_token_str = value;
-        Debug(1, "ZMS: JWT token found: %s", jwt_token_str.c_str());
-      } else if ( !strcmp(name, "user") ) {
-        username = UriDecode(value);
-      } else if ( !strcmp(name, "pass") ) {
-        password = UriDecode(value);
-        Debug(1, "Have %s for password", password.c_str());
-      } else {
-        Debug(1, "Unknown parameter passed to zms %s=%s", name, value);
-      }  // end if possible parameter names
-    }  // end foreach parm
-  } else {
+  if ( query == nullptr ) {
     Fatal("No query string.");
+    return exit_zms(0);
   }  // end if query
+
+  Debug(1, "Query: %s", query);
+
+  char *q_ptr = (char *)query;
+  char *parms[16];  // Shouldn't be more than this
+  int parm_no = 0;
+  while ( (parm_no < 16) && (parms[parm_no] = strtok(q_ptr, "&")) ) {
+    parm_no++;
+    q_ptr = nullptr;
+  }
+
+  for ( int p = 0; p < parm_no; p++ ) {
+    char *name = strtok(parms[p], "=");
+    char const *value = strtok(nullptr, "=");
+    if ( !value )
+      value = "";
+    if ( !strcmp(name, "source") ) {
+      if ( !strcmp(value, "event") ) {
+        source = ZMS_EVENT;
+      } else if ( !strcmp(value, "fifo") ) {
+        source = ZMS_FIFO;
+      } else {
+        source = ZMS_MONITOR;
+      }
+    } else if ( !strcmp(name, "mode") ) {
+      mode = !strcmp(value, "jpeg")?ZMS_JPEG:ZMS_MPEG;
+      mode = !strcmp(value, "raw")?ZMS_RAW:mode;
+      mode = !strcmp(value, "zip")?ZMS_ZIP:mode;
+      mode = !strcmp(value, "single")?ZMS_SINGLE:mode;
+    } else if ( !strcmp(name, "format") ) {
+      strncpy(format, value, sizeof(format)-1);
+    } else if ( !strcmp(name, "monitor") ) {
+      monitor_id = atoi(value);
+      if ( source == ZMS_UNKNOWN )
+        source = ZMS_MONITOR;
+    } else if ( !strcmp(name, "time") ) {
+      event_time = atoi(value);
+    } else if ( !strcmp(name, "event") ) {
+      event_id = strtoull(value, nullptr, 10);
+      source = ZMS_EVENT;
+    } else if ( !strcmp(name, "frame") ) {
+      frame_id = strtoull(value, nullptr, 10);
+      source = ZMS_EVENT;
+    } else if ( !strcmp(name, "scale") ) {
+      scale = atoi(value);
+      if (scale > 1600) {
+        Warning("Limiting scale to 16x");
+        scale = 1600;
+      }
+    } else if ( !strcmp(name, "rate") ) {
+      rate = atoi(value);
+    } else if ( !strcmp(name, "maxfps") ) {
+      maxfps = atof(value);
+    } else if ( !strcmp(name, "bitrate") ) {
+      bitrate = atoi(value);
+    } else if ( !strcmp(name, "ttl") ) {
+      ttl = atoi(value);
+    } else if ( !strcmp(name, "replay") ) {
+      if ( !strcmp(value, "gapless") ) {
+        replay = EventStream::MODE_ALL_GAPLESS;
+      } else if ( !strcmp(value, "all") ) {
+        replay = EventStream::MODE_ALL;
+      } else if ( !strcmp(value, "none") ) {
+        replay = EventStream::MODE_NONE;
+      } else if ( !strcmp(value, "single") ) {
+        replay = EventStream::MODE_SINGLE;
+      } else {
+        Error("Unsupported value %s for replay, defaulting to none", value);
+      }
+    } else if ( !strcmp(name, "connkey") ) {
+      connkey = atoi(value);
+    } else if ( !strcmp(name, "buffer") ) {
+      playback_buffer = atoi(value);
+    } else if ( !strcmp(name, "auth") ) {
+      strncpy(auth, value, sizeof(auth)-1);
+    } else if ( !strcmp(name, "token") ) {
+      jwt_token_str = value;
+      Debug(1, "ZMS: JWT token found: %s", jwt_token_str.c_str());
+    } else if ( !strcmp(name, "user") ) {
+      username = UriDecode(value);
+    } else if ( !strcmp(name, "pass") ) {
+      password = UriDecode(value);
+      Debug(1, "Have %s for password", password.c_str());
+    } else {
+      Debug(1, "Unknown parameter passed to zms %s=%s", name, value);
+    }  // end if possible parameter names
+  }  // end foreach parm
 
   if ( monitor_id ) {
     snprintf(log_id_string, sizeof(log_id_string), "zms_m%d", monitor_id);
@@ -188,7 +206,7 @@ int main(int argc, const char *argv[], char **envp) {
   logInit(log_id_string);
 
   if ( config.opt_use_auth ) {
-    User *user = NULL;
+    User *user = nullptr;
 
     if ( jwt_token_str != "" ) {
       // user = zmLoadTokenUser(jwt_token_str, config.auth_hash_ips);
@@ -207,40 +225,46 @@ int main(int argc, const char *argv[], char **envp) {
       }
     }
     if ( !user ) {
-      fputs("HTTP/1.0 403 Forbidden\r\n\r\n", stdout);
+      if (nph) {
+        fputs("HTTP/1.0 403 Forbidden\r\n\r\n", stdout);
+      } else {
+        fputs("Status: 403\r\nContent-Type: text/html\r\n", stdout);
+      }
 
       const char *referer = getenv("HTTP_REFERER");
       Error("Unable to authenticate user from %s", referer);
-      logTerm();
-      zmDbClose();
-      return 0;
+      return exit_zms(0);
     }
     if ( !ValidateAccess(user, monitor_id) ) {
       delete user;
-      user = NULL;
-      fputs("HTTP/1.0 403 Forbidden\r\n\r\n", stdout);
-      logTerm();
-      zmDbClose();
-      return 0;
+      user = nullptr;
+      if (nph) {
+        fputs("HTTP/1.0 403 Forbidden\r\n\r\n", stdout);
+      } else {
+        fputs("Status: 403\r\nContent-Type: text/html\r\n\r\n", stdout);
+      }
+      return exit_zms(0);
     }
     delete user;
-    user = NULL;
+    user = nullptr;
   }  // end if config.opt_use_auth
 
-  hwcaps_detect();
+  HwCapsDetect();
+  Image::Initialise();
   zmSetDefaultTermHandler();
   zmSetDefaultDieHandler();
 
-  setbuf(stdout, 0);
+  setbuf(stdout, nullptr);
   if ( nph ) {
     fputs("HTTP/1.0 200 OK\r\n", stdout);
   }
   fprintf(stdout, "Server: ZoneMinder Video Server/%s\r\n", ZM_VERSION);
 
-  time_t now = time(0);
+  time_t now = time(nullptr);
   char date_string[64];
+  tm now_tm = {};
   strftime(date_string, sizeof(date_string)-1,
-      "%a, %d %b %Y %H:%M:%S GMT", gmtime(&now));
+      "%a, %d %b %Y %H:%M:%S GMT", gmtime_r(&now, &now_tm));
 
   fputs("Last-Modified: ", stdout);
   fputs(date_string, stdout);
@@ -259,14 +283,7 @@ int main(int argc, const char *argv[], char **envp) {
     stream.setStreamTTL(ttl);
     stream.setStreamQueue(connkey);
     stream.setStreamBuffer(playback_buffer);
-    if ( !stream.setStreamStart(monitor_id) ) {
-      Error("Unable to connect to zmc process for monitor %d", monitor_id);
-      fprintf(stderr, "Unable to connect to zmc process. "
-         " Please ensure that it is running.");
-      logTerm();
-      zmDbClose();
-      return -1;
-    }
+    stream.setStreamStart(monitor_id);
 
     if ( mode == ZMS_JPEG ) {
       stream.setStreamType(MonitorStream::STREAM_JPEG);
@@ -335,8 +352,5 @@ int main(int argc, const char *argv[], char **envp) {
     Error("Neither a monitor or event was specified.");
   }  // end if monitor or event
 
-  logTerm();
-  zmDbClose();
-
-  return 0;
+  return exit_zms(0);
 }

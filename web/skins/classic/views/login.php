@@ -4,9 +4,12 @@ xhtmlHeaders(__FILE__, translate('Login'));
 <body>
 <?php echo getNavBarHTML(); ?>
 	<div class="container">
-		<form class="center-block" name="loginForm" id="loginForm" method="post" action="?">
+<?php
+if ( defined('ZM_OPT_USE_AUTH') and ZM_OPT_USE_AUTH ) {
+?>
+		<form class="center-block" name="loginForm" id="loginForm" method="post" action="?view=login">
 			<input type="hidden" name="action" value="login"/>
-			<input type="hidden" name="view" value="login"/>
+      <input type="hidden" name="postLoginQuery" value="<?php echo isset($_SESSION['postLoginQuery']) ? validHtmlStr($_SESSION['postLoginQuery']) : ''; ?>" />
 
 			<div id="loginError" class="hidden alarm" role="alert">
 				<span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
@@ -35,6 +38,19 @@ if (
 				<button class="btn btn-lg btn-primary btn-block" type="submit"><?php echo translate('Login') ?></button>
 			</div>
 		</form>
+<?php 
+} else {
+?>
+<div class="error">
+User Authentication is not turned on. You cannot log in.
+<script nonce="<?php echo $cspNonce; ?>">
+  setTimeout(function() {
+    window.location.replace('?view=console');
+  }, 500);
+</script>
+</div>
+<?php
+} # end if ZM_OPT_AUTH
+?>
 	</div>
-</body>
-</html>
+<?php xhtmlFooter() ?>

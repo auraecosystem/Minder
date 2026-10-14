@@ -11,18 +11,21 @@ How can I stop ZoneMinder filling up my disk?
 ---------------------------------------------
 
 Recent versions of ZoneMinder come with a filter you can use for this purpose already included. 
-The filter is called **PurgeWhenFull** and to find it, choose one of the event counts from the console page, for instance events in the last hour, for one of your monitors. **Note** that this filter is automatically enabled if you do a fresh install of ZoneMinder including creating a new database. If you already have an existing database and are upgrading ZoneMinder, it will retain the settings of the filter (which in earlier releases was disabled by default). So you may want to check if PurgeWhenFull is enabled and if not, enable it.
+The filter is called **PurgeWhenFull** and to find it, click on the word **Filters** in the header.
+**Note** that this filter is automatically enabled if you do a fresh install of ZoneMinder including creating a new database. If you already have an existing database and are upgrading ZoneMinder, it will retain the settings of the filter (which in earlier releases was disabled by default). So you may want to check if PurgeWhenFull is enabled and if not, enable it.
 
-To enable it, go to Web Console, click on any of your Events of any of your monitors.
-This will bring up an event listing and a filter window.
+To enable it, go to Web Console, click on the word **Filters** in the UI header.
 
-In the filter window there is a drop down select box labeled 'Use Filter', that lets your select a saved filter. Select 'PurgeWhenFull' and it will load that filter.
+In the filter window there is a drop down select box labeled 'Use Filter', that lets you select a saved filter. Select 'PurgeWhenFull' and it will load that filter.
 
 Make any modifications you might want, such as the percentage full you want it to kick in, or how many events to delete at a time (it will repeat the filter as many times as needed to clear the space, but will only delete this many events each time to get there).
 
-Then click on 'Save' which will bring up a new window. Make sure the 'Automatically delete' box is checked and press save to save your filter. This will then run in the background to keep your disk within those limits.
+Ensure that the Run filter in background checkbox is checked.
+Ensure that the Delete all matches checkbox is checked.
 
-After you've done that, you changes will automatically be loaded into zmfilter within a few minutes.
+Then click on 'Save'.  The filter will immediately begin executing in the background to keep your disk within those limits.
+
+Please note that that this filter will only affect the default storage location.  If you have added other storage areas, you must create a PurgeWhenFull filter for each one, and specify the Storage Area as one of the parameters in the filter. You can duplicate the existing PurgeWhenFull filter by using Save As instead of Save.
 
 Check the ``zmfilter.log`` file to make sure it is running as sometimes missing perl modules mean that it never runs but people don't always realize.
 
@@ -46,7 +49,7 @@ Normally an event created as the result of an alarm consists of entries in one o
 
 ZM_RUN_AUDIT:
 
-The zmaudit daemon exists to check that the saved information in the database and on the file system match and are consistent with each other. If an error occurs or if you are using 'fast deletes' it may be that database records are deleted but files remain. In this case, and similar, zmaudit will remove redundant information to synchronize the two data stores. This option controls whether zmaudit is run in the background and performs these checks and fixes continuously. This is recommended for most systems however if you have a very large number of events the process of scanning the database and file system may take a long time and impact performance. In this case you may prefer to not have zmaudit running unconditionally and schedule occasional checks at other, more convenient, times.
+The zmaudit daemon exists to check that the saved information in the database and on the file system match and are consistent with each other. If an error occurs or if you are using 'fast deletes' it may be that database records are deleted but files remain. In this case, and similar, zmaudit will remove redundant information to synchronize the two data stores. This option controls whether zmaudit is run in the background and performs these checks and fixes continuously. This is not recommended for most systems, as zmaudit.pl is very resource intensive.
 
 ZM_AUDIT_CHECK_INTERVAL:
 
@@ -184,14 +187,27 @@ Once I did this, images started to stream for me.
 
 Lastly, please look for errors created by the zmc processes.  If zmc isn't running, then zms will not be able to get an image from it and will exit.
 
-I have several monitors configured but when I load the Montage view in FireFox why can I only see two? or, Why don't all my cameras display when I use the Montage view in FireFox?
+I have several monitors configured but when I load the Montage view why can I only see two? or, Why don't all my cameras display when I use the Montage view?
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-By default FireFox only supports a small number of simultaneous connections. Using the montage view usually requires one persistent connection for each camera plus intermittent connections for other information such as statuses.
+By default most browsers only support a small number of simultaneous connections to any given server. Using the montage view usually requires one persistent connection for each camera plus intermittent connections for other information such as statuses.
 
-You will need to increase the number of allowed connections to use the montage view with more than a small number of cameras.  Certain FireFox extensions such as FasterFox may also help to achieve the same result.
+In firefox you can increase the limit, but other browsers are not configurable in this way.
 
-To resolve this situation, follow the instructions below:
+A solution for all browsers is something we call multi-port.  We reconfigure apache to operate on ports other than the default of 80(http) or 443(https).  You need to pick a range, let's say 30000 to 30010 in order to support 10 cameras.  We add lines to your zoneminder apache config file as follows: 
+
+Listen 30000
+Listen 30001
+Listen 30002
+Listen 30003
+etc
+Listen 30010
+
+If you are using virtualhosts, you will have to add these to the VirtualHost directive as well.
+
+Then in ZoneMinder config, Go Options -> Network and set MIN_STREAMING_PORT to 30000.  Now when generating urls to stream images from ZoneMinder a port will be appended that is 30000 + MonitorId, so Monitor 1 will stream from 30001 and so on.  This will allow Montage to stream from all monitors.
+
+Alternatively if you are in fact using only Firefox, you can increase the limit as follows:
 
 Enter ``about:config`` in the address bar
 
@@ -209,7 +225,7 @@ change the 3 to a 1
 
 I can't see more than 6 monitors in montage on my browser
 ---------------------------------------------------------
-Browsers such a Chrome and Safari only support upto 6 streams from the same domain. To work around that, take a look at the multi-port configuration discussed in  the ``MIN_STREAMING_PORT`` configuration in :doc:`/userguide/options/options_network`
+Browsers such a Chrome and Safari only support up to 6 streams from the same domain. To work around that, take a look at the multi-port configuration discussed in  the ``MIN_STREAMING_PORT`` configuration in :doc:`/userguide/options/options_network`
 
 Why is ZoneMinder using so much CPU?
 ---------------------------------------
@@ -465,8 +481,8 @@ Why do I only see black screens with a timestamp when monitoring my camera?
 In the monitor windows where you see the black screen with a timestamp, select settings and enter the Brightness, Contrast, Hue, and Color settings reported for the device by ``zmu -d <device_path> -q -v``.  32768 may be appropriate values to try for these settings.  After saving the settings, select Settings again to confirm they saved successfully.
 
 
-How do I repair the MySQL Database?
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+How do I repair the MySQL/MariaDB Database?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 There is two ways to go about this. In most cases you can run from the command prompt ->
 ``mysqlcheck --all-databases --auto-repair -p your_database_password -u your_databse_user``
 
@@ -475,9 +491,9 @@ If that does not work then you will have to make sure that ZoneMinder is stopped
 ``myisamchk --silent --force --fast --update-state -O key_buffer=64M -O sort_buffer=64M -O read_buffer=1M -O write_buffer=1M /var/lib/mysql/*/*.MYI``
 
 
-How do I repair the MySQL Database when the cli fails?
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-In Ubuntu, the commands listed above do not seem to work.  However, actually doing it by hand from within MySQL does.  (But that is beyond the scope of this document)  But that got me thinking...  And phpmyadmin does work.  Bring up a terminal.
+How do I repair the MySQL/MariaDB Database when the cli fails?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+In Ubuntu, the commands listed above do not seem to work.  However, actually doing it by hand from within MySQL/MariaDB does.  (But that is beyond the scope of this document)  But that got me thinking...  And phpmyadmin does work.  Bring up a terminal.
 ``sudo apt-get install phpmyadmin``
 
 Now go to ``http://zoneminder_IP/`` and stop the ZM service.  Continue to ``http://zoneminder_IP/phpmyadmin`` and select the zoneminder database.  Select and tables marked 'in use' and pick the action 'repare' to fix.  Restart the zoneminder service from the web browser.  Remove or disable the phpmyadmin tool, as it is not always the most secure thing around, and opens your database wide to any skilled hacker.
@@ -492,8 +508,8 @@ Any time you update a major version that ZoneMinder depends on, you need to reco
 Zoneminder doesn't start automatically on boot
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Check the list for log entries like "zmfix[766]: ERR [Can't connect to server: Can't connect to local MySQL server through socket '/var/run/mysqld/mysqld.sock' (2)] ". 
-What can happen is that zoneminder is started too quickly after Mysql and tries to contact the database server before it's ready. Zoneminder gets no answer and aborts. 
-August 2010 - Ubuntu upgrades seem to be leaving several systems in this state. One way around this is to add a delay to the zoneminder startup script allowing Mysql to finish starting. 
+What can happen is that zoneminder is started too quickly after MySQL/MariaDB and tries to contact the database server before it's ready. Zoneminder gets no answer and aborts. 
+August 2010 - Ubuntu upgrades seem to be leaving several systems in this state. One way around this is to add a delay to the zoneminder startup script allowing MySQL/MariaDB to finish starting. 
 "Simply adding 'sleep 15' in the line above 'zmfix -a' in the /etc/init.d/zoneminder file fixed my ZoneMinder startup problems!" - credit to Pada.
 
 Remote Path setup for Panasonic and other Camera

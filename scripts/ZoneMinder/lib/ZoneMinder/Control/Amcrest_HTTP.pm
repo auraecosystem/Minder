@@ -187,74 +187,65 @@ sub moveAbs ## Up, Down, Left, Right, etc. ??? Doesn't make sense here...
 sub moveConUp {
   my $self = shift;
   Debug('Move Up');
-  $$self{LastMove} = 'code=Up&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=Up&channel=0&arg1=0&arg2=1&arg3=0');
-  #usleep(500); ##XXX Should this be passed in as a "speed" parameter?
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=Up&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=Up&channel=0&arg1=0&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub moveConDown {
   my $self = shift;
   Debug('Move Down');
-  $$self{LastMove} = 'code=Down&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=Down&channel=0&arg1=0&arg2=1&arg3=0');
-  #usleep(500);
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=Down&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=Down&channel=0&arg1=0&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub moveConLeft {
   my $self = shift;
   Debug('Move Left');
-  $$self{LastMove} = 'code=Left&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=Left&channel=0&arg1=0&arg2=1&arg3=0');
-  #usleep(500);
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=Left&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=Left&channel=0&arg1=0&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub moveConRight {
   my $self = shift;
   Debug('Move Right');
-  $$self{LastMove} = 'code=Right&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=Right&channel=0&arg1=0&arg2=1&arg3=0');
-  #usleep(500);
-  #Debug('Move Right Stop');
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=Right&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=Right&channel=0&arg1=0&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub moveConUpRight {
   my $self = shift;
   Debug('Move Diagonally Up Right');
-  $$self{LastMove} = 'code=RightUp&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=RightUp&channel=0&arg1=1&arg2=1&arg3=0');
-  #usleep(500);
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=RightUp&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=RightUp&channel=0&arg1=1&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub moveConDownRight {
   my $self = shift;
   Debug('Move Diagonally Down Right');
-  $$self{LastMove} = 'code=RightDown&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=RightDown&channel=0&arg1=1&arg2=1&arg3=0');
-  #usleep(500);
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=RightDown&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{LastCmd} = 'code=RightDown&channel=0&arg1=1&arg2=1&arg3=0';
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub moveConUpLeft {
   my $self = shift;
   Debug('Move Diagonally Up Left');
-  $$self{LastMove} = 'code=LeftUp&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=LeftUp&channel=0&arg1=1&arg2=1&arg3=0');
-  #usleep(500);
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=LeftUp&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=LeftUp&channel=0&arg1=1&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub moveConDownLeft {
   my $self = shift;
   Debug('Move Diagonally Down Left');
-  $$self{LastMove} = 'code=LeftDown&channel=0&arg1=0&arg2=1&arg3=0';
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=LeftDown&channel=0&arg1=1&arg2=1&arg3=0');
-  #usleep (500);
-  #$self->sendCmd('cgi-bin/ptz.cgi?action=stop&code=LeftDown&channel=0&arg1=0&arg2=1&arg3=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=LeftDown&channel=0&arg1=1&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 # Stop is not "correctly" implemented as control_functions.php translates this to "Center"
@@ -263,16 +254,56 @@ sub moveConDownLeft {
 
 sub moveStop {
   my $self = shift;
-  if ($$self{LastMove}) {
-    Debug('Move Stop '.$$self{LastMove});
-    $self->sendCmd('cgi-bin/ptz.cgi?action=stop&'.$$self{LastMove});
-    $$self{LastMove} = '';
+  if ($$self{LastCmd}) {
+    if ( substr($$self{LastCmd},0,4) eq 'code' ) {
+      # last command was a PTZ move
+      Debug('Move Stop '.$$self{LastCmd});
+      $self->sendCmd('cgi-bin/ptz.cgi?action=stop&'.$$self{LastCmd});
+      $$self{LastCmd} = '';
+      $$self{Monitor}->resumeMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+    } elsif ( substr($$self{LastCmd},0,5)  eq 'focus' ) {
+      # last command was a focus adjustment
+      Debug('focus Stop '.$$self{LastCmd});
+      $self->sendCmd('cgi-bin/devVideoInput.cgi?action=adjustFocusContinuously&focus=0&zoom=0');
+      $$self{LastCmd} = '';
+      $$self{Monitor}->resumeMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+    } else {
+      Debug('focus Stop '.$$self{LastCmd});
+      Error('Unknown or unaccounted for lastcmd value: ' . $$self{LastCmd});
+      $$self{LastCmd} = '';
+    }
   } else {
     Debug('Move Stop/Center');
     $self->sendCmd('cgi-bin/ptz.cgi?action=start&code=PositionABS&channel=0&arg1=0&arg2=0&arg3=0&arg4=1');
   }
 }
 
+#new focus stuff
+sub focusAuto {
+  my $self = shift;
+  Debug('Set AutoFocus on');
+  $self->sendCmd('cgi-bin/devVideoInput.cgi?action=autoFocus');
+}
+
+# focusConNear, focusConFar, focusStop is implemented above in sub moveStop 
+
+sub focusConFar {
+  my $self = shift;
+  Debug('Set Focus far');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=FocusFar&channel=0&arg1=0&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
+}
+
+sub focusConNear {
+  my $self = shift;
+  Debug('Set Focus near');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=FocusNear&channel=0&arg1=0&arg2=1&arg3=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
+}
+
+# end of new focus stuff
 # Move Camera to Home Position
 # The current API does not support a Home per se, so we'll just send the camera to preset #1
 # NOTE: It goes without saying that the user must have set up preset #1 for this to work.
@@ -320,17 +351,17 @@ sub moveMap {
 sub zoomConTele {
   my $self = shift;
   Debug('Zoom continuous tele');
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomTele&arg1=0&arg2=0&arg3=0&arg4=0');
-  usleep(100000);
-  $self->sendCmd('cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomTele&arg1=0&arg2=0&arg3=0&arg4=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=ZoomTele&channel=0&arg1=0&arg2=0&arg3=0&arg4=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 sub zoomConWide {
   my $self = shift;
   Debug('Zoom continuous wide');
-  $self->sendCmd('cgi-bin/ptz.cgi?action=start&channel=0&code=ZoomWide&arg1=0&arg2=0&arg3=0&arg4=0');
-  usleep (100000);
-  $self->sendCmd('cgi-bin/ptz.cgi?action=stop&channel=0&code=ZoomWide&arg1=0&arg2=0&arg3=0&arg4=0');
+  $$self{Monitor}->suspendMotionDetection() if !$self->{Monitor}->{ModectDuringPTZ};
+  $$self{LastCmd} = 'code=ZoomWide&channel=0&arg1=0&arg2=0&arg3=0&arg4=0';
+  $self->sendCmd('cgi-bin/ptz.cgi?action=start&'.$$self{LastCmd});
 }
 
 1;

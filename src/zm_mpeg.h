@@ -21,6 +21,8 @@
 #define ZM_MPEG_H
 
 #include "zm_ffmpeg.h"
+#include <pthread.h>
+#include <array>
 
 #if HAVE_LIBAVCODEC
 
@@ -41,11 +43,11 @@ protected:
   const char *format;
   const char *codec_name;
   enum _AVPIXELFORMAT pf;
-  AVOutputFormat *of;
+  const AVOutputFormat *of;
   AVFormatContext *ofc;
   AVStream *ost;
   AVCodecContext *codec_context;
-  AVCodec *codec;
+  const AVCodec *codec;
   AVFrame *opicture;
   AVFrame *tmp_opicture;
   uint8_t *video_outbuf;
@@ -60,7 +62,7 @@ protected:
   pthread_mutex_t *buffer_copy_lock;
   int buffer_copy_size;
   int buffer_copy_used;
-  AVPacket** packet_buffers;
+  std::array<av_packet_ptr, 2> packet_buffers;
   int packet_index;
   int SendPacket(AVPacket *packet);
   static void* StreamingThreadCallback(void *ctx);

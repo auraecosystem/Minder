@@ -27,9 +27,16 @@
 }
 
 #definitionPanel {
-    float: left;
     margin: 2px;
     text-align: center;
+}
+#definitionPanel:after {
+  content: ".";
+  display: block;
+  height: 0;
+    font-size: 0;
+  clear: both;
+  visibility: hidden;
 }
 
 #definitionPanel input[type=submit],
@@ -38,19 +45,38 @@
 }
 
 #imagePanel {
+  float: left;
     position: relative;
+    width: 50%;
+    min-width: 647px; /* extra 6 px for padding */
 }
 
 /* NB: The size of the imageFrame determines the area within which the markers
  * may be moved.  When adjusting the padding and margins of the imageFrame and
  * the DIVs within it, test that the markers behave sensibly when dragged to
  * the extreme edges of the imageFrame. */
-#imageFrame {
+.imageFrame {
     position: relative;
-    padding: 0 3px 3px 0; /* Compensate for negative margins in the markers just below. */
+    padding: 3px 4px 4px 3px;
+}
+.imageFrame svg {
+  box-sizing: border-box;
+ position:absolute;
+ top: 3px;
+ left: 3px; 
+ right: 3px;
+ background: none;
+ }
+.imageFrame img {
+  width: 100%;
+  display: block;
+}
+.imageFrame img.alarm ,
+.imageFrame img.alert {
+  padding: 1px;
 }
 
-#imageFrame div {
+.imageFrame div {
     position: absolute;
     width: 7px;
     height: 7px;
@@ -59,15 +85,15 @@
     z-index: 5;
 }
 
-#imageFrame div {
+.imageFrame div {
     background-image: url(../skins/classic/graphics/point-g.png);
 }
 
-#imageFrame div.highlight {
+.imageFrame div.highlight {
     background-image: url(../skins/classic/graphics/point-o.png);
 }
 
-#imageFrame div.active {
+.imageFrame div.active {
     background-image: url(../skins/classic/graphics/point-r.png);
 }
 
@@ -152,4 +178,19 @@ input[name="newZone[MaxAlarmPixels]"] {
 }
 input.ZonePoint {
     width: 75px;
+}
+svg {
+  overflow: visible;
+}
+svg circle {
+  fill: green;
+    overflow: visible;
+}
+#monitorState {
+  display: inline;
+  float: left;
+}
+#StreamControlButtons {
+  display: inline;
+  float: right;
 }

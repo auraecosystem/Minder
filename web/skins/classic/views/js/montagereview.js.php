@@ -1,9 +1,29 @@
 
 var server_utc_offset = <?php
-$TimeZone = new DateTimeZone( ini_get('date.timezone') );
+$tz = ini_get('date.timezone');
+if (!$tz) {
+  $tz = 'UTC';
+  ZM\Warning('Timezone has not been set. Either select it in Options->System->Timezone or in php.ini');
+}
+
+$TimeZone = new DateTimeZone($tz);
 $now = new DateTime('now', $TimeZone);
 $offset = $TimeZone->getOffset($now);
 echo $offset.'; // '.floor($offset / 3600).' hours ';
+
+global $defaultScale;
+global $liveMode;
+global $fitMode;
+global $speeds;
+global $speedIndex;
+global $initialDisplayInterval;
+global $minTimeSecs;
+global $maxTimeSecs;
+global $minTime;
+global $maxTime;
+global $monitors;
+global $eventsSql;
+global $framesSql;
 ?>
 
 var currentScale=<?php echo $defaultScale?>;
@@ -40,7 +60,7 @@ $maxScore = 0;
 if ( !$liveMode ) {
   $result = dbQuery($eventsSql);
   if ( !$result ) {
-    Fatal('SQL-ERR');
+    ZM\Fatal('SQL-ERR');
     return;
   }
 
@@ -62,7 +82,7 @@ if ( !$liveMode ) {
       if ( !isset($event['FramesById']) ) {
         // Please note that this is the last frame as we sort DESC
         $event['FramesById'] = array();
-        $frame['NextTimeStampSecs'] = $event['EndTime'];
+        $frame['NextTimeStampSecs'] = $event['EndTimeSecs'];
       } else {
         $frame['NextTimeStampSecs'] = $next_frames[$frame['EventId']]['TimeStampSecs'];
         $frame['NextFrameId'] = $next_frames[$frame['EventId']]['Id'];
@@ -116,8 +136,8 @@ if ( !$liveMode ) {
 
   // We only reset the calling time if there was no calling time
   if ( !isset($minTime) || !isset($maxTime) ) {
-    $maxTime = strftime($maxTimeSecs);
-    $minTime = strftime($minTimeSecs);
+    $maxTime = date('c', $maxTimeSecs);
+    $minTime = date('c', $minTimeSecs);
   } else {
     $minTimeSecs = strtotime($minTime);
     $maxTimeSecs = strtotime($maxTime);
@@ -146,7 +166,6 @@ foreach ( ZM\Server::find() as $Server ) {
   echo 'Servers[' . $Server->Id() . '] = new Server(' . $Server->to_json(). ");\n";
 }
 
-
 echo '
 var monitorName = [];
 var monitorLoading = [];
@@ -167,8 +186,8 @@ var monitorCanvasCtx = [];
 var monitorPtr = []; // monitorName[monitorPtr[0]] is first monitor
 ';
 
-$numMonitors=0;  // this array is indexed by the monitor ID for faster access later, so it may be sparse
-$avgArea=floatval(0);  // Calculations the normalizing scale
+$numMonitors = 0;  // this array is indexed by the monitor ID for faster access later, so it may be sparse
+$avgArea = floatval(0);  // Calculations the normalizing scale
 
 foreach ( $monitors as $m ) {
   $avgArea = $avgArea + floatval($m->Width() * $m->Height());
@@ -217,10 +236,9 @@ for ( $i=0; $i < count($speeds); $i++ )
 echo "];\n";
 ?>
 
-var scrubAsObject=$('scrub');
 var cWidth;   // save canvas width
 var cHeight;  // save canvas height
 var canvas;   // global canvas definition so we don't have to keep looking it up
-var ctx;
+var ctx = null;
 var underSlider;    // use this to hold what is hidden by the slider
 var underSliderX;   // Where the above was taken from (left side, Y is zero)

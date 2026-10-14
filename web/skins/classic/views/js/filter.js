@@ -2,7 +2,7 @@ function selectFilter(element) {
   element.form.submit();
 }
 
-function validateForm( form ) {
+function validateForm(form) {
   var rows = $j(form).find('tbody').eq(0).find('tr');
   var obrCount = 0;
   var cbrCount = 0;
@@ -36,24 +36,32 @@ function validateForm( form ) {
     if ( ! have_archivestatus_term ) {
       return confirm('You have enabled deleting events but do not have a term referencing the archived status of the event.  This filter may delete events that you want to save! Are you sure?');
     }
+  } else if ( form.elements['filter[UpdateDiskSpace]'].checked ) {
+    var have_endtime_term = false;
+    for ( var i = 0; i < rows.length; i++ ) {
+      if (
+        ( form.elements['filter[Query][terms][' + i + '][attr]'].value == 'EndDateTime' ) ||
+        ( form.elements['filter[Query][terms][' + i + '][attr]'].value == 'EndTime' ) ||
+        ( form.elements['filter[Query][terms][' + i + '][attr]'].value == 'EndDate' )
+      ) {
+        have_endtime_term = true;
+        break;
+      }
+    }
+    if ( ! have_endtime_term ) {
+      return confirm('You don\'t have an End Date/Time term in your filter.  This might match recordings that are still in progress and so the UpdateDiskSpace action will be a waste of time and resources.  Ideally you should have an End Date/Time IS NOT NULL term.  Do you want to continue?');
+    }
   } else if ( form.elements['filter[Background]'].checked ) {
     if ( ! (
-      form.elements['filter[AutoArchive]'].checked
-      ||
-      form.elements['filter[UpdateDiskSpace]'].checked
-      ||
-      form.elements['filter[AutoVideo]'].checked
-      ||
-      form.elements['filter[AutoEmail]'].checked
-      ||
-      form.elements['filter[AutoMessage]'].checked
-      ||
-      form.elements['filter[AutoExecute]'].checked
-      ||
-      form.elements['filter[AutoDelete]'].checked
-      ||
-      form.elements['filter[AutoCopy]'].checked
-      ||
+      form.elements['filter[AutoArchive]'].checked ||
+      form.elements['filter[AutoUnarchive]'].checked ||
+      form.elements['filter[UpdateDiskSpace]'].checked ||
+      form.elements['filter[AutoVideo]'].checked ||
+      (form.elements['filter[AutoEmail]'] && form.elements['filter[AutoEmail]'].checked) ||
+      (form.elements['filter[AutoMessage]'] && form.elements['filter[AutoMessage]'].checked) ||
+      form.elements['filter[AutoExecute]'].checked ||
+      form.elements['filter[AutoDelete]'].checked ||
+      form.elements['filter[AutoCopy]'].checked ||
       form.elements['filter[AutoMove]'].checked
     ) ) {
       alert('You have chosen to run this filter in the background but not selected any actions.');
@@ -64,39 +72,47 @@ function validateForm( form ) {
 
 function updateButtons(element) {
   var form = element.form;
-  if ( element.type == 'checkbox' && element.checked ) {
-    form.elements['executeButton'].disabled = false;
-  } else {
-    var canExecute = false;
-    if ( form.elements['filter[AutoArchive]'] && form.elements['filter[AutoArchive]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoCopy]'] && form.elements['filter[AutoCopy]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoMove]'] && form.elements['filter[AutoMove]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoVideo]'] && form.elements['filter[AutoVideo]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoUpload]'] && form.elements['filter[AutoUpload]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoEmail]'] && form.elements['filter[AutoEmail]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoMessage]'] && form.elements['filter[AutoMessage]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoExecute]'].checked && form.elements['filter[AutoExecuteCmd]'].value != '' ) {
-      canExecute = true;
-    } else if ( form.elements['filter[AutoDelete]'].checked ) {
-      canExecute = true;
-    } else if ( form.elements['filter[UpdateDiskSpace]'].checked ) {
-      canExecute = true;
-    }
-    form.elements['executeButton'].disabled = !canExecute;
+
+  var canExecute = false;
+  if ( form.elements['filter[AutoArchive]'] && form.elements['filter[AutoArchive]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoUnarchive]'] && form.elements['filter[AutoUnarchive]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoCopy]'] && form.elements['filter[AutoCopy]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoMove]'] && form.elements['filter[AutoMove]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoVideo]'] && form.elements['filter[AutoVideo]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoUpload]'] && form.elements['filter[AutoUpload]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoEmail]'] && form.elements['filter[AutoEmail]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoMessage]'] && form.elements['filter[AutoMessage]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoExecute]'].checked && form.elements['filter[AutoExecuteCmd]'].value != '' ) {
+    canExecute = true;
+  } else if ( form.elements['filter[AutoDelete]'].checked ) {
+    canExecute = true;
+  } else if ( form.elements['filter[UpdateDiskSpace]'].checked ) {
+    canExecute = true;
   }
+  document.getElementById('executeButton').disabled = !canExecute;
   if ( form.elements['filter[Name]'].value ) {
-    form.elements['Save'].disabled = false;
-    form.elements['SaveAs'].disabled = false;
+    document.getElementById('Save').disabled = false;
+    document.getElementById('SaveAs').disabled = false;
   } else {
-    form.elements['Save'].disabled = true;
-    form.elements['SaveAs'].disabled = true;
+    document.getElementById('Save').disabled = true;
+    document.getElementById('SaveAs').disabled = true;
+  }
+}
+
+function click_AutoEmail(element) {
+  updateButtons(this);
+  if ( this.checked ) {
+    $j('#EmailOptions').show();
+  } else {
+    $j('#EmailOptions').hide();
   }
 }
 
@@ -133,44 +149,32 @@ function resetFilter( element ) {
   $j('#contentForm')[0].reset();
 }
 
-function submitToEvents( element ) {
+function submitToEvents(element) {
   var form = element.form;
-  form.action = thisUrl + '?view=events';
-  history.replaceState(null, null, '?view=filter&' + $j(form).serialize());
+  window.location.assign('?view=events&'+$j(form).serialize());
 }
 
-function submitToMontageReview( element ) {
+function submitToMontageReview(element) {
   var form = element.form;
   form.action = thisUrl + '?view=montagereview';
-  history.replaceState(null, null, '?view=filter&' + $j(form).serialize());
+  window.location.assign('?view=montagereview&'+$j(form).serialize());
+  history.replaceState(null, null, '?view=montagereview&live=0&' + $j(form).serialize());
 }
 
 function submitToExport(element) {
   var form = element.form;
   window.location.assign('?view=export&'+$j(form).serialize());
-  //createPopup('?view=export&filter_id='+form.elements['Id'].value, 'zmExport', 'export' );
 }
 
-function executeFilter( element ) {
-  var form = element.form;
-  form.action = thisUrl + '?view=filter';
-  form.elements['action'].value = 'execute';
+function submitAction(button) {
+  var form = button.form;
+  form.elements['action'].value = button.value;
   form.submit();
-  //history.replaceState(null, null, '?view=filter&' + $j(form).serialize());
 }
 
-function saveFilter( element ) {
+function deleteFilter(element) {
   var form = element.form;
-  form.target = window.name;
-  form.elements['action'].value = element.value;
-  form.action = thisUrl + '?view=filter';
-  //form.submit();
-  // Submit is done by the button type="submit"
-}
-
-function deleteFilter( element ) {
-  var form = element.form;
-  if ( confirm( deleteSavedFilterString+" '"+form.elements['filter[Name]'].value+"'?" ) ) {
+  if (confirm(deleteSavedFilterString+" '"+form.elements['filter[Name]'].value+"'?")) {
     form.elements['action'].value = 'delete';
     form.submit();
   }
@@ -222,7 +226,8 @@ function parseRows(rows) {
     }
 
     var attr = inputTds.eq(2).children().val();
-    if ( attr == 'Archived' ) { // Archived types
+
+    if ( attr == 'Archived' ) { //Archived types
       inputTds.eq(3).html('equal to<input type="hidden" name="filter[Query][terms][' + rowNum + '][op]" value="=">');
       var archiveSelect = $j('<select></select>').attr('name', queryPrefix + rowNum + '][val]').attr('id', queryPrefix + rowNum + '][val]');
       for (var i = 0; i < archiveTypes.length; i++) {
@@ -230,6 +235,18 @@ function parseRows(rows) {
       }
       var archiveVal = inputTds.eq(4).children().val();
       inputTds.eq(4).html(archiveSelect).children().val(archiveVal).chosen({width: "101%"});
+    } else if ( attr == 'AlarmedZoneId' ) {
+      var zoneSelect = $j('<select></select>').attr('name', queryPrefix + rowNum + '][val]').attr('id', queryPrefix + rowNum + '][val]');
+      for ( monitor_id in monitors ) {
+        for ( zone_id in zones ) {
+          var zone = zones[zone_id];
+          if ( monitor_id == zone.MonitorId ) {
+            zoneSelect.append('<option value="' + zone_id + '">' + zone.Name + '</option>');
+          }
+        } // end foreach zone
+      } // end foreach monitor
+      var zoneVal = inputTds.eq(4).children().val();
+      inputTds.eq(4).html(zoneSelect).children().val(zoneVal).chosen({width: "101%"});
     } else if ( attr.indexOf('Weekday') >= 0 ) { //Weekday selection
       var weekdaySelect = $j('<select></select>').attr('name', queryPrefix + rowNum + '][val]').attr('id', queryPrefix + rowNum + '][val]');
       for (var i = 0; i < weekdays.length; i++) {
@@ -260,22 +277,47 @@ function parseRows(rows) {
       inputTds.eq(4).html(storageSelect).children().val(storageVal).chosen({width: "101%"});
     } else if ( attr == 'MonitorName' ) { //Monitor names
       var monitorSelect = $j('<select></select>').attr('name', queryPrefix + rowNum + '][val]').attr('id', queryPrefix + rowNum + '][val]');
-      for ( var monitor_id in monitors ) {
+      sorted_monitor_ids.forEach(function(monitor_id) {
         monitorSelect.append('<option value="' + monitors[monitor_id].Name + '">' + escapeHTML(monitors[monitor_id].Name) + '</option>');
-      }
+      });
       var monitorVal = inputTds.eq(4).children().val();
-      inputTds.eq(4).html(monitorSelect).children().val(monitorVal);
-    } else { //Reset to regular text field and operator for everything that isn't special
-      var opSelect = $j('<select></select>').attr('name', queryPrefix + rowNum + '][op]').attr('id', queryPrefix + rowNum + '][op]');
-      for (var key in opTypes) {
-        opSelect.append('<option value="' + key + '">' + opTypes[key] + '</option>');
+      inputTds.eq(4).html(monitorSelect).children().val(monitorVal).chosen({width: '101%'});
+    } else if ( attr == 'ExistsInFileSystem' ) {
+      var select = $j('<select></select>').attr('name', queryPrefix + rowNum + '][val]').attr('id', queryPrefix + rowNum + '][val]');
+      for ( var booleanVal in booleanValues ) {
+        select.append('<option value="' + booleanVal + '">' + escapeHTML(booleanValues[booleanVal]) + '</option>');
       }
-      var opVal = inputTds.eq(3).children().val();
-      inputTds.eq(3).html(opSelect).children().val(opVal).chosen({width: "101%"});
+      var val = inputTds.eq(4).children().val();
+      if ( ! val ) val = 'false'; // default to the first option false
+      inputTds.eq(4).html(select).children().val(val);
+    } else { // Reset to regular text field and operator for everything that isn't special
       var textInput = $j('<input></input>').attr('type', 'text').attr('name', queryPrefix + rowNum + '][val]').attr('id', queryPrefix + rowNum + '][val]');
       var textVal = inputTds.eq(4).children().val();
       inputTds.eq(4).html(textInput).children().val(textVal);
     }
+
+    // Validate the operator
+    var opSelect = $j('<select></select>').attr('name', queryPrefix + rowNum + '][op]').attr('id', queryPrefix + rowNum + '][op]');
+    var opVal = inputTds.eq(3).children().val();
+    if ( attr == 'ExistsInFileSystem' ) {
+      if ( ! opVal ) {
+        // Default to equals so that something gets selected
+        opVal = 'IS';
+      }
+      for ( var key of ['IS', 'IS NOT'] ) {
+        opSelect.append('<option value="' + key + '"'+(key == opVal ? ' selected="selected"' : '')+'>' + opTypes[key] + '</option>');
+      }
+    } else {
+      if ( ! opVal ) {
+        // Default to equals so that something gets selected
+        console.log("No value for operator. Defaulting to =");
+        opVal = '=';
+      }
+      for ( var key in opTypes ) {
+        opSelect.append('<option value="' + key + '"'+(key == opVal ? ' selected="selected"' : '')+'>' + opTypes[key] + '</option>');
+      }
+    }
+    inputTds.eq(3).html(opSelect).children().val(opVal).chosen({width: "101%"});
     if ( attr.endsWith('DateTime') ) { //Start/End DateTime
       inputTds.eq(4).children().datetimepicker({timeFormat: "HH:mm:ss", dateFormat: "yy-mm-dd", maxDate: 0, constrainInput: false});
     } else if ( attr.endsWith('Date') ) { //Start/End Date
@@ -292,8 +334,9 @@ function parseRows(rows) {
     inputTds.eq(2).children().eq(0).attr('name', 'filter'+stringFilter(term));
     inputTds.eq(2).children().eq(0).attr('id', 'filter'+stringFilter(term));
   } //End for each term/row
-  history.replaceState(null, null, '?view=filter&' + $j('#contentForm').serialize());
-}
+  // ICON This populates the url bar with contents of the form.  I'm not sure why
+  // history.replaceState(null, null, '?view=filter&' + $j('#contentForm').serialize());
+} // parseRows
 
 function stringFilter(term) {
   var termString = '';
@@ -334,11 +377,26 @@ function delTerm( element ) {
   parseRows(rows);
 }
 
-function init() {
-  updateButtons( $('executeButton') );
+function debugFilter() {
+  getModal('filterdebug', 'fid='+filterid);
+}
+
+function manageModalBtns(id) {
+  // Manage the CANCEL modal button
+  var cancelBtn = document.getElementById(id+"CancelBtn");
+  if ( cancelBtn ) {
+    document.getElementById(id+"CancelBtn").addEventListener("click", function onCancelClick(evt) {
+      $j('#'+id).modal('hide');
+    });
+  }
+}
+
+function initPage() {
+  updateButtons($j('#executeButton')[0]);
   $j('#Id').chosen();
   $j('#fieldsTable select').not("[name$='br\\]'], [name$='cnj\\]']").chosen({width: '101%'}); //Every select except brackets/and
   $j("#sortTable [name$='sort_field\\]']").chosen();
+  parseRows($j('#fieldsTable tbody').children());
 }
 
-window.addEventListener( 'DOMContentLoaded', init );
+$j(document).ready(initPage);

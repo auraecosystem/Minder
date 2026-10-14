@@ -1,42 +1,27 @@
+<?php 
+  global $streamMode;
+  global $showPtzControls;
+  global $connkey;
+  global $monitor;
+  global $scale;
+  global $labels;
+?>
 //
 // Import constants
 //
-var STATE_IDLE = <?php echo STATE_IDLE ?>;
-var STATE_PREALARM = <?php echo STATE_PREALARM ?>;
-var STATE_ALARM = <?php echo STATE_ALARM ?>;
-var STATE_ALERT = <?php echo STATE_ALERT ?>;
-var STATE_TAPE = <?php echo STATE_TAPE ?>;
-
-var stateStrings = new Array();
-stateStrings[STATE_IDLE] = "<?php echo translate('Idle') ?>";
-stateStrings[STATE_PREALARM] = "<?php echo translate('Idle') ?>";
-stateStrings[STATE_ALARM] = "<?php echo translate('Alarm') ?>";
-stateStrings[STATE_ALERT] = "<?php echo translate('Alert') ?>";
-stateStrings[STATE_TAPE] = "<?php echo translate('Record') ?>";
 
 var deleteString = "<?php echo translate('Delete') ?>";
 
-var CMD_NONE = <?php echo CMD_NONE ?>;
-var CMD_PAUSE = <?php echo CMD_PAUSE ?>;
-var CMD_PLAY = <?php echo CMD_PLAY ?>;
-var CMD_STOP = <?php echo CMD_STOP ?>;
-var CMD_FASTFWD = <?php echo CMD_FASTFWD ?>;
-var CMD_SLOWFWD = <?php echo CMD_SLOWFWD ?>;
-var CMD_SLOWREV = <?php echo CMD_SLOWREV ?>;
-var CMD_FASTREV = <?php echo CMD_FASTREV ?>;
-var CMD_ZOOMIN = <?php echo CMD_ZOOMIN ?>;
-var CMD_ZOOMOUT = <?php echo CMD_ZOOMOUT ?>;
-var CMD_PAN = <?php echo CMD_PAN ?>;
-var CMD_SCALE = <?php echo CMD_SCALE ?>;
-var CMD_PREV = <?php echo CMD_PREV ?>;
-var CMD_NEXT = <?php echo CMD_NEXT ?>;
-var CMD_SEEK = <?php echo CMD_SEEK ?>;
-var CMD_QUERY = <?php echo CMD_QUERY ?>;
+var enableAlarmsStr = "<?php echo translate('EnableAlarms') ?>";
+var disableAlarmsStr = "<?php echo translate('DisableAlarms') ?>";
+var forceAlarmStr = "<?php echo translate('ForceAlarm') ?>";
+var cancelForcedAlarmStr = "<?php echo translate('CancelForcedAlarm') ?>";
 
 var SCALE_BASE = <?php echo SCALE_BASE ?>;
 
 var SOUND_ON_ALARM = <?php echo ZM_WEB_SOUND_ON_ALARM ?>;
 var POPUP_ON_ALARM = <?php echo ZM_WEB_POPUP_ON_ALARM ?>;
+var LIST_THUMBS = <?php echo ZM_WEB_LIST_THUMBS?'true':'false' ?>;
 
 var streamMode = "<?php echo $streamMode ?>";
 var showMode = "<?php echo ($showPtzControls && !empty($control))?"control":"events" ?>";
@@ -51,6 +36,20 @@ var monitorUrl = '<?php echo $monitor->UrlToIndex() ?>';
 var monitorType = '<?php echo $monitor->Type() ?>';
 var monitorRefresh = '<?php echo $monitor->Refresh() ?>';
 var monitorStreamReplayBuffer = <?php echo $monitor->StreamReplayBuffer() ?>;
+var monitorControllable = <?php echo $monitor->Controllable()?'true':'false' ?>;
+
+var monIdx = 0;
+var monitorData = new Array();
+monitorData[monitorData.length] = {
+  'id': <?php echo $monitor->Id() ?>,
+  'connKey': <?php echo $monitor->connKey() ?>,
+  'width': <?php echo $monitor->ViewWidth() ?>,
+  'height':<?php echo $monitor->ViewHeight() ?>,
+  'url': '<?php echo $monitor->UrlToIndex() ?>',
+  'onclick': function(){window.location.assign( '?view=watch&mid=<?php echo $monitor->Id() ?>' );},
+  'type': '<?php echo $monitor->Type() ?>',
+  'refresh': '<?php echo $monitor->Refresh() ?>'
+};
 
 var scale = '<?php echo $scale ?>';
 
@@ -58,10 +57,7 @@ var statusRefreshTimeout = <?php echo 1000*ZM_WEB_REFRESH_STATUS ?>;
 var eventsRefreshTimeout = <?php echo 1000*ZM_WEB_REFRESH_EVENTS ?>;
 var imageRefreshTimeout = <?php echo 1000*ZM_WEB_REFRESH_IMAGE ?>;
 
-var canEditMonitors = <?php echo canEdit( 'Monitors' )?'true':'false' ?>;
 var canStreamNative = <?php echo canStreamNative()?'true':'false' ?>;
-
-var canPlayPauseAudio = Browser.ie;
 
 <?php 
   $control = $monitor->Control();
@@ -76,4 +72,18 @@ var imageControlMode = null;
 <?php } ?>
 
 var refreshApplet = <?php echo (canStreamApplet() && $streamMode == "jpeg")?'true':'false' ?>;
-var appletRefreshTime = <?php echo ZM_RELOAD_CAMBOZOLA ?>;
+var appletRefreshTime = <?php echo defined('ZM_RELOAD_CAMBOZOLA') ? ZM_RELOAD_CAMBOZOLA : 0 ?>;
+
+var labels = new Array();
+<?php
+$labels = array();
+foreach( dbFetchAll( 'SELECT * FROM ControlPresets WHERE MonitorId = ?', NULL, array( $monitor->Id() ) ) as $row ) {
+  $labels[$row['Preset']] = $row['Label'];
+}
+
+foreach ( $labels as $index=>$label ) {
+?>
+labels[<?php echo validInt($index) ?>] = '<?php echo validJsStr($label) ?>';
+<?php
+}
+?>

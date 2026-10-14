@@ -1,4 +1,7 @@
 #!/bin/bash
+
+set -o pipefail
+
 # packpack setup file for the ZoneMinder project
 # Written by Andrew Bauer
 
@@ -114,6 +117,18 @@ commonprep () {
             exit 1
         fi
     fi
+
+    RTSPVER="cd7fd49becad6010a1b8466bfebbd93999a39878"
+    if [ -e "build/RtspServer-${RTSPVER}.tar.gz" ]; then
+        echo "Found existing RtspServer ${RTSPVER} tarball..."
+    else
+        echo "Retrieving RTSP ${RTSPVER} submodule..."
+        curl -L https://github.com/ZoneMinder/RtspServer/archive/${RTSPVER}.tar.gz > build/RtspServer-${RTSPVER}.tar.gz
+        if [ $? -ne 0 ]; then
+            echo "ERROR: RtspServer tarball retreival failed..."
+            exit 1
+        fi
+    fi
 }
 
 # Uncompress the submodule tarballs and move them into place
@@ -133,6 +148,14 @@ movecrud () {
         tar -xzf build/cakephp-enum-behavior-${CEBVER}.tar.gz
         rmdir web/api/app/Plugin/CakePHP-Enum-Behavior
         mv -f CakePHP-Enum-Behavior-${CEBVER} web/api/app/Plugin/CakePHP-Enum-Behavior
+    fi
+    if [ -e "dep/RtspServer/CMakeLists.txt" ]; then
+        echo "RtspServer already installed..."
+    else
+        echo "Unpacking RtspServer..."
+        tar -xzf build/RtspServer-${RTSPVER}.tar.gz
+        rmdir dep/RtspServer
+        mv -f RtspServer-${RTSPVER} dep/RtspServer
     fi
 }
 
@@ -200,7 +223,7 @@ setdebpkgname () {
     if [ "" == "$VERSION" ]; then
       export VERSION="${versionfile}~${thedate}.${numcommits}"
     fi
-    export RELEASE="${DIST}"
+    export RELEASE="${DIST}${PACKAGE_VERSION}"
 
     checkvars
 
@@ -251,6 +274,13 @@ execpackpack () {
         fi
     else
         packpack/packpack $parms
+    fi
+
+    if [ $? -ne 0 ]; then
+      echo
+      echo "ERROR: An error occurred while executing packpack."
+      echo
+      exit 1
     fi
 }
 
@@ -339,10 +369,10 @@ elif [ "${OS}" == "debian" ] || [ "${OS}" == "ubuntu" ] || [ "${OS}" == "raspbia
   setdebpkgname
   movecrud
 
-  if [ "${DIST}" == "trusty" ] || [ "${DIST}" == "precise" ]; then
-    ln -sfT distros/ubuntu1204 debian
-  elif [ "${DIST}" == "wheezy" ]; then
-    ln -sfT distros/debian debian
+  if [ "${DIST}" == "bionic" ] || [ "${DIST}" == "focal" ] || [ "${DIST}" == "hirsute" ] || [ "${DIST}" == "impish" ] || [ "${DIST}" == "jammy" ] || [ "${DIST}" == "buster" ] || [ "${DIST}" == "bullseye" ] || [ "${DIST}" == "bookworm" ]; then
+    ln -sfT distros/ubuntu2004 debian
+  elif [ "${DIST}" == "beowulf" ]; then
+    ln -sfT distros/beowulf debian
   else
     ln -sfT distros/ubuntu1604 debian
   fi
@@ -353,7 +383,7 @@ elif [ "${OS}" == "debian" ] || [ "${OS}" == "ubuntu" ] || [ "${OS}" == "raspbia
   execpackpack
 
   # Try to install and run the newly built zoneminder package
-  if [ "${OS}" == "ubuntu" ] && [ "${DIST}" == "xenial" ] && [ "${ARCH}" == "x86_64" ] && [ "${TRAVIS}" == "true" ]; then
+  if [ "${OS}" == "ubuntu" ] && [ "${DIST}" == "bionic" ] && [ "${ARCH}" == "x86_64" ] && [ "${TRAVIS}" == "true" ]; then
       echo "Begin Deb package installation..."
       install_deb
   fi

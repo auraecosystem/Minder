@@ -17,41 +17,40 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */  
 
-#include "zm.h"
-
 #ifndef ZM_REGEXP_H
 #define ZM_REGEXP_H
 
-#if HAVE_LIBPCRE
+#include "zm_config.h"
 
+#if HAVE_LIBPCRE
+#define PCRE2_CODE_UNIT_WIDTH 8
 #if HAVE_PCRE_H
-#include <pcre.h>
+#include <pcre2.h>
 #elif HAVE_PCRE_PCRE_H
-#include <pcre/pcre.h>
+#include <pcre/pcre2.h>
 #else
-#error Unable to locate pcre.h, please do 'locate pcre.h' and report location to zoneminder.com
+#error Unable to locate pcre2.h, please do 'locate pcre2.h' and report location to zoneminder.com
 #endif
 
 class RegExpr
 {
 protected:
-  pcre *regex;
-  pcre_extra *regextra;
+  pcre2_code *regex{nullptr};
   int max_matches;
-  int *match_vectors;
-  mutable char **match_buffers;
-  int *match_lengths;
-  bool *match_valid;
+  pcre2_match_data *match_data{nullptr};
+  mutable char **match_buffers{nullptr};
+  PCRE2_SIZE *match_lengths{nullptr};
+  bool *match_valid{nullptr};
 
 protected:
-  const char *match_string;
-  int n_matches;
+  const char *match_string{nullptr};
+  int32_t n_matches;
   
 protected:
   bool ok;
 
 public:
-  RegExpr( const char *pattern, int cflags=0, int p_max_matches=32 );
+  explicit RegExpr( const char *pattern, int cflags=0, int p_max_matches=32 );
   ~RegExpr();
   bool Ok() const { return( ok ); }
   int MatchCount() const { return( n_matches ); }
