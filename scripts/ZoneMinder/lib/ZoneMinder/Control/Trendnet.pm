@@ -3,6 +3,7 @@ package ZoneMinder::Control::Trendnet;
 use 5.006;
 use strict;
 use warnings;
+use Time::HiRes qw(usleep);
 
 require ZoneMinder::Base;
 require ZoneMinder::Control;
@@ -16,102 +17,48 @@ our @ISA = qw(ZoneMinder::Control);
 #  can set them here if you want.
 #
 
-our $REALM = '';
-our $PROTOCOL = 'http://';
-our $USERNAME = 'admin';
-our $PASSWORD = '';
-our $ADDRESS = '';
-
 use ZoneMinder::Logger qw(:all);
 use ZoneMinder::Config qw(:all);
+use URI;
+use LWP::UserAgent;
 
 sub open {
   my $self = shift;
   $self->loadMonitor();
 
-  if ( ( $self->{Monitor}->{ControlAddress} =~ /^(?<PROTOCOL>https?:\/\/)?(?<USERNAME>[^:@]+)?:?(?<PASSWORD>[^\/@]+)?@?(?<ADDRESS>.*)$/ ) ) {
-    $PROTOCOL = $+{PROTOCOL} if $+{PROTOCOL};
-    $USERNAME = $+{USERNAME} if $+{USERNAME};
-    $PASSWORD = $+{PASSWORD} if $+{PASSWORD};
-    $ADDRESS = $+{ADDRESS} if $+{ADDRESS};
-  } else {
-    Error('Failed to parse auth from address ' . $self->{Monitor}->{ControlAddress});
-    $ADDRESS = $self->{Monitor}->{ControlAddress};
-  }
-  if ( !($ADDRESS =~ /:/) ) {
-    Error('You generally need to also specify the port.  I will append :80');
-    $ADDRESS .= ':80';
-  }
-
-  use LWP::UserAgent;
   $self->{ua} = LWP::UserAgent->new;
   $self->{ua}->agent('ZoneMinder Control Agent/'.ZoneMinder::Base::ZM_VERSION);
   $self->{state} = 'closed';
-  #   credentials:  ("ip:port" (no prefix!), realm (string), username (string), password (string)
-  Debug ( "sendCmd credentials control address:'".$ADDRESS
-    ."'  realm:'" . $REALM
-    . "'  username:'" . $USERNAME
-    . "'  password:'".$PASSWORD
-    ."'"
-  );
-  $self->{ua}->credentials($ADDRESS,$REALM,$USERNAME,$PASSWORD);
 
-  # Detect REALM
-  my $res = $self->{ua}->get($PROTOCOL.$ADDRESS.'/cgi/ptdc.cgi');
-
-  if ( $res->is_success ) {
+  $self->guess_credentials();
+  if ($self->get_realm('/cgi/ptdc.cgi')) {
     $self->{state} = 'open';
-    return;
+    return 1;
   }
-
-  if ( $res->status_line() eq '401 Unauthorized' ) {
-
-    my $headers = $res->headers();
-    foreach my $k ( keys %$headers ) {
-      Debug("Initial Header $k => $$headers{$k}");
-    }
-
-    if ( $$headers{'www-authenticate'} ) {
-      my ( $auth, $tokens ) = $$headers{'www-authenticate'} =~ /^(\w+)\s+(.*)$/;
-      if ( $tokens =~ /\w+="([^"]+)"/i ) {
-        if ( $REALM ne $1 ) {
-          $REALM = $1;
-          Debug("Changing REALM to $REALM");
-          $self->{ua}->credentials($ADDRESS,$REALM,$USERNAME,$PASSWORD);
-          $res = $self->{ua}->get($PROTOCOL.$ADDRESS.'/cgi/ptdc.cgi');
-          if ( $res->is_success() ) {
-            $self->{state} = 'open';
-            return;
-          }
-          Error('Authentication still failed after updating REALM' . $res->status_line);
-          $headers = $res->headers();
-          foreach my $k ( keys %$headers ) {
-            Debug("Initial Header $k => $$headers{$k}");
-          }  # end foreach
-        } else {
-          Error('Authentication failed, not a REALM problem');
-        }
-      } else {
-        Error('Failed to match realm in tokens');
-      } # end if
-    } else {
-      Debug('No headers line');
-    } # end if headers
-  } # end if $res->status_line() eq '401 Unauthorized'
+  return undef;
 } # end sub open
 
 sub sendCmd {
-
   # This routine is used for all moving, which are all GET commands...
-
   my $self = shift;
+
+  if (!$self->{Monitor}->{ModectDuringPTZ}) {
+    $$self{Monitor}->suspendMotionDetection();
+  }
+
   my $cmd = shift;
+  my $url = '/cgi/ptdc.cgi?command='.$cmd;
+  my $res = $self->get($url);
+  if (!$res->is_success) {
+    Error("sendCmdPost Error check failed: '".$res->status_line()."' cmd:");
+    return;
+  }
 
-  my $url = $PROTOCOL.$ADDRESS.'/cgi/ptdc.cgi?command='.$cmd;
-  my $res = $self->{ua}->get($url);
-
-  Debug('sendCmd command: ' . $url);
-  if ( $res->is_success ) {
+  if (!$self->{Monitor}->{ModectDuringPTZ}) {
+    usleep(10000);
+    $$self{Monitor}->resumeMotionDetection();
+  }
+  if ($res->is_success) {
     Debug($res->content);
     return !undef;
   }
@@ -129,31 +76,26 @@ sub sendCmdPost {
   my $url = shift;
   my $form = shift;
 
-  my $result = undef;
-
-  if ( $url eq undef ) {
-    Error('url passed to sendCmdPost is undefined.');
+  if (!$url) {
+    Error('no url passed to sendCmdPost');
     return -1;
   }
 
-  #Debug('sendCmdPost url: ' . $url . ' cmd: ' . $cmd);
-
-  my $res;
-  $res = $self->{ua}->post(
-    $PROTOCOL.$ADDRESS.$url,
-    Referer=>$PROTOCOL.$ADDRESS.$url,
-    Content=>$form
+  my $res = $self->post(
+    $url,
+    $form,
+    [
+      Referer=>$$self{BaseURL}.'/eng/admin/tools_default.cgi',
+    ]
+    #Content=>$form
   );
 
-  Debug("sendCmdPost credentials control to: $PROTOCOL$ADDRESS$url realm:'" . $REALM . "'  username:'" . $USERNAME . "' password:'".$PASSWORD."'");
-
-  if ( $res->is_success ) {
-    Debug($res->content);
-    return !undef;
+  Debug($res->content);
+  if (!$res->is_success) {
+    return undef;
   }
-  Error("sendCmdPost Error check failed: '".$res->status_line()."' cmd:");
 
-  return $result;
+  return 1;
 } # end sub sendCmdPost
 
 sub move {
@@ -365,6 +307,18 @@ sub reset {
   Debug('Reset -- IR auto');
 
   $self->sendCmdPost($url,$cmd);
+}
+
+sub reboot {
+  my $self = shift;
+  Debug('Camera Reboot');
+  if ($$self{state} ne 'open') {
+    Warning("Not open. opening. Should call ->open() before calling reboot()"); 
+    return if !$self->open();
+  }
+  $self->sendCmdPost('/eng/admin/reboot.cgi', { reboot => 'true' });
+  #$referer = 'http://'.$HI->ip().'/eng/admin/tools_default.cgi';
+  #$initial_url = $HI->ip().'/eng/admin/tools_default.cgi';
 }
 
 1;

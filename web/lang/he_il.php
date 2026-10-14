@@ -151,7 +151,7 @@ $SLANG = array(
     'BadFrameSkip'         => 'Frame skip count must be an integer of zero or more',
     'BadHeight'            => 'Height must be set to a valid value',
     'BadHost'              => 'Host must be set to a valid ip address or hostname, do not include http://',
-    'BadImageBufferCount'  => 'Image buffer size must be an integer of 10 or more',
+    'BadImageBufferCount'  => 'Image buffer size must be an integer of 2 or more',
     'BadLabelX'            => 'Label X co-ordinate must be set to an integer of zero or more',
     'BadLabelY'            => 'Label Y co-ordinate must be set to an integer of zero or more',
     'BadMaxFPS'            => 'Maximum FPS must be a positive integer or floating point value',
@@ -394,7 +394,7 @@ $SLANG = array(
     'HasWhiteSpeed'        => 'Has White Bal. Speed',
     'HasZoomSpeed'         => 'Has Zoom Speed',
     'High'                 => 'גבוה',
-    'HighBW'               => 'גבוה ר/פ',
+    'Highband'               => 'גבוה ר/פ',
     'Home'                 => 'בית',
     'Hostname'             => 'Hostname',               // Added - 2018-08-30
     'Hour'                 => 'שעה',
@@ -432,7 +432,7 @@ $SLANG = array(
     'Logout'               => 'התנתק',
     'Logs'                 => 'Logs',                   // Added - 2011-06-17
     'Low'                  => 'נמוך',
-    'LowBW'                => 'נמוך ר/פ',
+    'Lowband'                => 'נמוך ר/פ',
     'Main'                 => 'מרכזי',
     'Man'                  => 'מדריך',
     'Manual'               => 'מדריך',
@@ -463,7 +463,7 @@ $SLANG = array(
     'MaxZoomStep'          => 'Max Zoom Step',
     'MaximumFPS'           => 'Maximum FPS',
     'Medium'               => 'בינוני',
-    'MediumBW'             => 'Medium B/W',
+    'Medband'             => 'Medium B/W',
     'Message'              => 'Message',                // Added - 2011-06-16
     'MinAlarmAreaLtMax'    => 'Minimum alarm area should be less than maximum',
     'MinAlarmAreaUnset'    => 'You must specify the minimum alarm pixel count',
@@ -946,7 +946,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 

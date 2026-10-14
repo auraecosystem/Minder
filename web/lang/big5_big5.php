@@ -155,7 +155,7 @@ $SLANG = array(
     'BadFrameSkip'         => 'Frame skip count must be an integer of zero or more',
     'BadHeight'            => 'Height must be set to a valid value',
     'BadHost'              => 'Host must be set to a valid ip address or hostname, do not include http://',
-    'BadImageBufferCount'  => 'Image buffer size must be an integer of 10 or more',
+    'BadImageBufferCount'  => 'Image buffer size must be an integer of 2 or more',
     'BadLabelX'            => 'Label X co-ordinate must be set to an integer of zero or more',
     'BadLabelY'            => 'Label Y co-ordinate must be set to an integer of zero or more',
     'BadMaxFPS'            => 'Maximum FPS must be a positive integer or floating point value',
@@ -399,7 +399,7 @@ $SLANG = array(
     'HasWhiteSpeed'        => 'Has White Bal. Speed',
     'HasZoomSpeed'         => 'Has Zoom Speed',
     'High'                 => '高',
-    'HighBW'               => 'High&nbsp;B/W',
+    'Highband'               => 'High&nbsp;B/W',
     'Home'                 => 'Home',
     'Hostname'             => 'Hostname',               // Added - 2018-08-30
     'Hour'                 => '時',
@@ -437,7 +437,7 @@ $SLANG = array(
     'Logout'               => '登出',
     'Logs'                 => 'Logs',                   // Added - 2011-06-17
     'Low'                  => '低',
-    'LowBW'                => 'Low&nbsp;B/W',
+    'Lowband'                => 'Low&nbsp;B/W',
     'Main'                 => 'Main',
     'Man'                  => 'Man',
     'Manual'               => 'Manual',
@@ -468,7 +468,7 @@ $SLANG = array(
     'MaxZoomStep'          => 'Max Zoom Step',
     'MaximumFPS'           => '最大每秒框架數 fps',
     'Medium'               => '中',
-    'MediumBW'             => 'Medium&nbsp;B/W',
+    'Medband'             => 'Medium&nbsp;B/W',
     'Message'              => 'Message',                // Added - 2011-06-16
     'MinAlarmAreaLtMax'    => 'Minimum alarm area should be less than maximum',
     'MinAlarmAreaUnset'    => 'You must specify the minimum alarm pixel count',
@@ -951,7 +951,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 

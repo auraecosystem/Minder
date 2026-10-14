@@ -152,7 +152,7 @@ $SLANG = array(
     'BadFrameSkip'          => 'Antal Frame skip skal være et heltal på 0 eller mere',
     'BadHeight'             => 'Højde skal sættes til en gyldig værdi',
     'BadHost'               => 'Host skal vare en gyldig IP adresse eller hostname, inkludér ikke http://',
-    'BadImageBufferCount'   => 'Billed buffer størrelse skal være et heltal på 10 eller mere',
+    'BadImageBufferCount'   => 'Billed buffer størrelse skal være et heltal på 2 eller mere',
     'BadLabelX'             => 'Mærkat X co-ordinaten skal sættes til et heltal på 0 eller mere',
     'BadLabelY'             => 'Mærkat Y co-ordinaten skal sættes til et heltal på 0 eller mere',
     'BadMaxFPS'             => 'Maximum FPS skal være et positivt heltal eller flydende tal',
@@ -396,7 +396,7 @@ $SLANG = array(
     'HasWhiteSpeed'         => 'Has White Bal. Speed',
     'HasZoomSpeed'          => 'Has Zoom Speed',
     'High'                  => 'Høj',
-    'HighBW'                => 'High&nbsp;B/W',
+    'Highband'                => 'High&nbsp;B/W',
     'Home'                  => 'Hjemme',
     'Hostname'              => 'Hostname',
     'Hour'                  => 'Time',
@@ -434,7 +434,7 @@ $SLANG = array(
     'Logout'                => 'Logud',
     'Logs'                  => 'Logs',
     'Low'                   => 'Lav',
-    'LowBW'                 => 'Lav&nbsp;B/W',
+    'Lowband'                 => 'Lav&nbsp;B/W',
     'Main'                  => 'Hoved',
     'Man'                   => 'Man',
     'Manual'                => 'Manuel',
@@ -465,7 +465,7 @@ $SLANG = array(
     'MaxZoomStep'           => 'Max Zoom Step',
     'MaximumFPS'            => 'Maximum FPS',
     'Medium'                => 'Medium',
-    'MediumBW'              => 'Medium&nbsp;B/W',
+    'Medband'              => 'Medium&nbsp;B/W',
     'Message'               => 'Meddelelse',
     'MinAlarmAreaLtMax'     => 'Minimum alarm område skal være mindre end maksimum',
     'MinAlarmAreaUnset'     => 'Du skal angive det minimale antal alarm pixels',
@@ -973,7 +973,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 

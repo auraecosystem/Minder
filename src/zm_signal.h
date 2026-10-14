@@ -1,26 +1,27 @@
 /*
  * ZoneMinder Signal Handling Interface, $Date$, $Revision$
  * Copyright (C) 2001-2008 Philip Coombes
- * 
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version 2
  * of the License, or (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-*/  
+*/
 
 #ifndef ZM_SIGNAL_H
 #define ZM_SIGNAL_H
 
-#include <signal.h>
+#include "zm_config.h"
+#include <csignal>
 
 #if HAVE_EXECINFO_H
 #include <execinfo.h>
@@ -29,10 +30,10 @@
 #include <ucontext.h>
 #endif
 
-
-#include "zm.h"
-
 typedef RETSIGTYPE (SigHandler)( int );
+#if ( HAVE_SIGINFO_T && HAVE_UCONTEXT_T )
+typedef RETSIGTYPE (SigActionHandler)( int, siginfo_t *info, void *context );
+#endif
 
 extern bool zm_reload;
 extern bool zm_terminate;
@@ -47,7 +48,11 @@ RETSIGTYPE zmc_die_handler( int signal );
 
 void zmSetHupHandler( SigHandler *handler );
 void zmSetTermHandler( SigHandler *handler );
+#if ( HAVE_SIGINFO_T && HAVE_UCONTEXT_T )
+void zmSetDieHandler( SigActionHandler *handler );
+#else
 void zmSetDieHandler( SigHandler *handler );
+#endif
 
 void zmSetDefaultHupHandler();
 void zmSetDefaultTermHandler();

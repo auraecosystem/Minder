@@ -41,6 +41,7 @@ min-width: 0;
   position:relative;
   width:100%;
   height:100%;
+  overflow-y: auto;
 }
 input[type=range]::-ms-tooltip {
     display: none;
@@ -55,4 +56,7 @@ input[type=range]::-ms-tooltip {
 }
 #minTime, #maxTime {
 margin: 0 4px;
+}
+#monitors canvas {
+  background: black;
 }

@@ -19,31 +19,28 @@
 //
 
 // System edit actions
-if ( ! canEdit('System') ) {
+if ( !canEdit('System') ) {
   ZM\Warning('Need System permission to edit Storage');
   return;
 }
 
-if ( $action == 'Save' ) {
-  if ( !empty($_REQUEST['id']) )
-    $dbStorage = dbFetchOne('SELECT * FROM Storage WHERE Id=?', NULL, array($_REQUEST['id']));
-  else
-    $dbStorage = array();
+global $error_message;
 
-  $types = array();
-  $changes = getFormChanges($dbStorage, $_REQUEST['newStorage'], $types);
+if ($action == 'save') {
+  $storage = new ZM\Storage($_REQUEST['id']);
 
-  if ( count($changes) ) {
-    if ( !empty($_REQUEST['id']) ) {
-      dbQuery('UPDATE Storage SET '.implode(', ', $changes).' WHERE Id = ?', array($_REQUEST['id']));
+  $changes = $storage->changes($_REQUEST['newStorage']);
+
+  if (count($changes)) {
+    if ($storage->save($changes)) {
     } else {
-      dbQuery('INSERT INTO Storage set '.implode(', ', $changes));
-    }
-    $refreshParent = true;
+      $error_message .= $storage->get_last_error();
+    } // end if successful save
   }
-  $view = 'none';
+  // there is no view=storage, so need to redirect somewhere useful
+  $redirect = '?view=options&tab=storage';
+  $refreshParent = true;
 } else {
   ZM\Error("Unknown action $action in saving Storage");
 }
-
 ?>

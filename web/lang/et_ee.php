@@ -158,7 +158,7 @@ $SLANG = array(
     'BadFrameSkip'          => 'Kaadri vahelejätmise hulk peab olema integer, null või rohkem',
     'BadHeight'             => 'Kõrguseks peab olema valitud õige väärtus',
     'BadHost'               => 'Host ipeab olema õige. Ip aadress või hostinimi, ei tohi sisaldada http://',
-    'BadImageBufferCount'   => 'Pildi puhvri suurus peab olema integer, 10 või rohkem',
+    'BadImageBufferCount'   => 'Pildi puhvri suurus peab olema integer, 2 või rohkem',
     'BadLabelX'             => 'Label X co-ordinate must be set to an integer of zero or more',
     'BadLabelY'             => 'Label Y co-ordinate must be set to an integer of zero or more',
     'BadMaxFPS'             => 'Maximum FPS must be a positive integer or floating point value',
@@ -402,7 +402,7 @@ $SLANG = array(
     'HasWhiteSpeed'         => 'Has White Bal. Speed',
     'HasZoomSpeed'          => 'Has Zoom Speed',
     'High'                  => 'Suurim',
-    'HighBW'                => 'High&nbsp;B/W',
+    'Highband'                => 'High&nbsp;B/W',
     'Home'                  => 'Koju',
     'Hostname'             => 'Hostname',               // Added - 2018-08-30
     'Hour'                  => 'Tunnis',
@@ -440,7 +440,7 @@ $SLANG = array(
     'Logout'                => 'Logi välja',
     'Logs'                  => 'Logid',                   // Added - 2011-06-17
     'Low'                   => 'Madal',
-    'LowBW'                 => 'Low&nbsp;B/W',
+    'Lowband'                 => 'Low&nbsp;B/W',
     'Main'                  => 'Pea',
     'Man'                   => 'Man',
     'Manual'                => 'Juhend',
@@ -471,7 +471,7 @@ $SLANG = array(
     'MaxZoomStep'           => 'Max Zoom Step',
     'MaximumFPS'            => 'Maksimaalne FPS',
     'Medium'                => 'Keskmine',
-    'MediumBW'              => 'Medium&nbsp;B/W',
+    'Medband'              => 'Medium&nbsp;B/W',
     'Message'               => 'Message',                // Added - 2011-06-16
     'MinAlarmAreaLtMax'     => 'Minimum alarm area should be less than maximum',
     'MinAlarmAreaUnset'     => 'You must specify the minimum alarm pixel count',
@@ -953,7 +953,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 

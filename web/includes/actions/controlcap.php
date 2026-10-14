@@ -24,7 +24,7 @@ if ( !canEdit('Control') ) {
   return;
 } // end if !canEdit Controls
 
-if ( $action == 'controlcap' ) {
+if ( $action == 'Save' ) {
   require_once('includes/Control.php');
   $Control = new ZM\Control( !empty($_REQUEST['cid']) ? $_REQUEST['cid'] : null );
 
@@ -77,19 +77,24 @@ if ( $action == 'controlcap' ) {
     'HasPresets'    =>  0,
     'HasHomePreset' =>  0,
     'CanSetPresets' =>  0,
+    'CanLed' => 0,
+    'CanLight' => 0,
   );
 
   # Checkboxes don't return an element in the POST data, so won't be present in newControl.
   # So force a value for these fields
   foreach ( $field_defaults as $field => $value ) {
-    if ( ! (isset($_REQUEST['newControl'][$field]) and $_REQUEST['newControl'][$field]) ) {
-      $_REQUEST['newControl'][$field] = $value;
+    if ( ! (isset($_REQUEST['Control'][$field]) and $_REQUEST['Control'][$field]) ) {
+      $_REQUEST['Control'][$field] = $value;
     }
   } # end foreach type
 
   //$changes = getFormChanges( $control, $_REQUEST['newControl'], $types, $columns );
-  $Control->save($_REQUEST['newControl']);
-  $refreshParent = true;
-  $view = 'none';
+  if (!$Control->save($_REQUEST['Control'])) {
+    global $error_message;
+     $error_message .= "Error saving control: " . $Control->get_last_error().'</br>';
+  } else {
+    $redirect = '?view=options&tab=control';
+  }
 } // end if action
 ?>

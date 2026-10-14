@@ -152,7 +152,7 @@ $SLANG = array(
     'BadFrameSkip'         => 'Frame skip aantal moet een getal van nul of groter zijn',
     'BadHeight'            => 'Hoogte moet een geldige waarde zijn',
     'BadHost'              => 'Host moet een juist adres of hostname zijn, laat http:// weg',
-    'BadImageBufferCount'  => 'Buffergrootte moet een getal van 10 of groter zijn',
+    'BadImageBufferCount'  => 'Buffergrootte moet een getal van 2 of groter zijn',
     'BadLabelX'            => 'Label X-coördinaat moet een getal van nul of groter zijn',
     'BadLabelY'            => 'Label Y-coördinaat moet een getal van nul of groter zijn',
     'BadMaxFPS'            => 'Maximum FPS moet een positieve waarde zijn',
@@ -396,7 +396,7 @@ $SLANG = array(
     'HasWhiteSpeed'        => 'Heeft White Bal. Snelheid',
     'HasZoomSpeed'         => 'Heeft Zoomsnelheid',
     'High'                 => 'Hoog',
-    'HighBW'               => 'Hoog&nbsp;B/W',
+    'Highband'               => 'Hoog&nbsp;B/W',
     'Home'                 => 'Home',
     'Hostname'             => 'Hostname',               // Added - 2018-08-30
     'Hour'                 => 'Uur',
@@ -434,7 +434,7 @@ $SLANG = array(
     'Logout'               => 'Afmelden',
     'Logs'                 => 'Logs',
     'Low'                  => 'Laag',
-    'LowBW'                => 'Laag&nbsp;B/W',
+    'Lowband'                => 'Laag&nbsp;B/W',
     'Main'                 => 'Main',
     'Man'                  => 'Man',
     'Manual'               => 'Handmatig',
@@ -465,7 +465,7 @@ $SLANG = array(
     'MaxZoomStep'          => 'Max Zoom Stap',
     'MaximumFPS'           => 'Maximum FPS',
     'Medium'               => 'Gemiddeld',
-    'MediumBW'             => 'Gemiddelde&nbsp;B/W',
+    'Medband'             => 'Gemiddelde&nbsp;B/W',
     'Message'              => 'Bericht',
     'MinAlarmAreaLtMax'    => 'Minimum alarmgebied moet kleiner zijn dan het maximum',
     'MinAlarmAreaUnset'    => 'Specificeer het minimaal aantal alarmpixels',
@@ -948,7 +948,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 

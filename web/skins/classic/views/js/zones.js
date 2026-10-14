@@ -1,9 +1,71 @@
-var streamCmdParms = "view=request&request=stream&connkey="+connKey;
-var streamCmdReq = new Request.JSON( {url: monitorUrl, method: 'post', timeout: AJAX_TIMEOUT, link: 'cancel'} );
+// Manage the Add New Zone button
+function AddNewZone(el) {
+  url = el.getAttribute('data-url');
+  window.location.assign(url);
+}
 
-function streamCmdQuit( action ) {
-  if ( action ) {
-    streamCmdReq.send( streamCmdParms+"&command="+CMD_QUIT );
+var monitors = new Array();
+var TimerHideShow;
+
+function initPage() {
+  for ( var i = 0, length = monitorData.length; i < length; i++ ) {
+    monitors[i] = new MonitorStream(monitorData[i]);
+
+    monitors[i].setStreamScale();
+    monitors[i].start();
+  }
+  $j('svg polygon').on('click', function(e) {
+    window.location='?view=zone&mid='+this.getAttribute('data-mid')+'&zid='+this.getAttribute('data-zid');
+  });
+
+  // Manage the BACK button
+  document.getElementById("backBtn").addEventListener("click", function onBackClick(evt) {
+    evt.preventDefault();
+    window.history.back();
+  });
+
+  // Disable the back button if there is nothing to go back to
+  $j('#backBtn').prop('disabled', !document.referrer.length);
+
+  // Manage the REFRESH Button
+  document.getElementById("refreshBtn").addEventListener("click", function onRefreshClick(evt) {
+    evt.preventDefault();
+    window.location.reload(true);
+  });
+}
+
+function panZoomIn(el) {
+  zmPanZoom.zoomIn(el);
+}
+
+function panZoomOut(el) {
+  zmPanZoom.zoomOut(el);
+}
+
+function streamCmdQuit() {
+  for ( var i = 0, length = monitorData.length; i < length; i++ ) {
+    monitors[i] = new MonitorStream(monitorData[i]);
+    monitors[i].stop();
   }
 }
 
+window.addEventListener('DOMContentLoaded', initPage);
+
+document.onvisibilitychange = () => {
+  if (document.visibilityState === "hidden") {
+    TimerHideShow = clearTimeout(TimerHideShow);
+    TimerHideShow = setTimeout(function() {
+      //Stop monitors when closing or hiding page
+      for (let i = 0, length = monitorData.length; i < length; i++) {
+        monitors[i].kill();
+      }
+    }, 15*1000);
+  } else {
+    //Start monitors when show page
+    for (let i = 0, length = monitorData.length; i < length; i++) {
+      if (!monitors[i].started) {
+        monitors[i].start();
+      }
+    }
+  }
+};

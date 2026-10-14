@@ -161,7 +161,7 @@ $SLANG = array(
     'BadMotionFrameSkip'    => 'Motion Frame skip count must be an integer of zero or more',
     'BadHeight'             => 'Height must be set to a valid value',
     'BadHost'               => 'Host must be set to a valid ip address or hostname, do not include http://',
-    'BadImageBufferCount'   => 'Image buffer size must be an integer of 10 or more',
+    'BadImageBufferCount'   => 'Image buffer size must be an integer of 2 or more',
     'BadLabelX'             => 'Label X co-ordinate must be set to an integer of zero or more',
     'BadLabelY'             => 'Label Y co-ordinate must be set to an integer of zero or more',
     'BadMaxFPS'             => 'Maximum FPS must be a positive integer or floating point value',
@@ -402,7 +402,7 @@ $SLANG = array(
     'HasTurboTilt'          => 'Posjeduje turbo nagib',
     'HasWhiteSpeed'         => 'Posjeduje brzo podeš.bijele',
     'HasZoomSpeed'          => 'Posjeduje brzi zoom',
-    'HighBW'                => 'High&nbsp;B/W',
+    'Highband'                => 'High&nbsp;B/W',
     'High'                  => 'veliku',
     'Home'                  => 'Početna',
     'Hostname'				=> 'Hostname',
@@ -438,7 +438,7 @@ $SLANG = array(
     'LoggingIn'             => 'Prijavljujem',
     'Login'                 => 'prijava',
     'Logout'                => 'odjava',
-    'LowBW'                 => 'Low&nbsp;B/W',
+    'Lowband'                 => 'Low&nbsp;B/W',
     'Low'                   => 'nisku',
     'Main'                  => 'Glavno',
     'Man'                   => 'Man',
@@ -469,7 +469,7 @@ $SLANG = array(
     'MaxZoomRange'          => 'Max raspon zumiranja',
     'MaxZoomSpeed'          => 'Max brzina zumiranja',
     'MaxZoomStep'           => 'Max korak zumiranja',
-    'MediumBW'              => 'Medium&nbsp;B/W',
+    'Medband'              => 'Medium&nbsp;B/W',
     'Medium'                => 'srednju',
     'MinAlarmAreaLtMax'     => 'Min područje alarma mora biti manje od maksimalnog',
     'MinAlarmAreaUnset'     => 'Morate zadati minimalni broj alarm piksela',
@@ -989,7 +989,7 @@ $OLANG = array(
 	
 //    'LANG_DEFAULT' => array(
 //        'Prompt' => "This is a new prompt for this option",
-//        'Help' => "This is some new help for this option which will be displayed in the popup window when the ? is clicked"
+//        'Help' => "This is some new help for this option which will be displayed in the window when the ? is clicked"
 //    ),
 );
 
