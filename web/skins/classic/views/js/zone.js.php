@@ -1,12 +1,14 @@
+//
+// Import constants
+//
+
 <?php
   global $presets;
   global $zone;
-  global $newZone;
   global $monitor;
   global $selfIntersecting;
   global $streamMode;
   global $connkey;
-  global $streamSrc;
 ?>
 
 var presets = new Object();
@@ -16,20 +18,20 @@ foreach ( $presets as $preset ) {
 presets[<?php echo $preset['Id'] ?>] = {
     'UnitsIndex': <?php echo $preset['UnitsIndex'] ?>,
     'CheckMethodIndex': <?php echo $preset['CheckMethodIndex'] ?>,
-    'MinPixelThreshold': '<?php echo $preset['MinPixelThreshold'] ?>',
-    'MaxPixelThreshold': '<?php echo $preset['MaxPixelThreshold'] ?>',
-    'FilterX': '<?php echo $preset['FilterX'] ?>',
-    'FilterY': '<?php echo $preset['FilterY'] ?>',
-    'MinAlarmPixels': '<?php echo $preset['MinAlarmPixels'] ?>',
-    'MaxAlarmPixels': '<?php echo $preset['MaxAlarmPixels'] ?>',
-    'MinFilterPixels': '<?php echo $preset['MinFilterPixels'] ?>',
-    'MaxFilterPixels': '<?php echo $preset['MaxFilterPixels'] ?>',
-    'MinBlobPixels': '<?php echo $preset['MinBlobPixels'] ?>',
-    'MaxBlobPixels': '<?php echo $preset['MaxBlobPixels'] ?>',
-    'MinBlobs': '<?php echo $preset['MinBlobs'] ?>',
-    'MaxBlobs': '<?php echo $preset['MaxBlobs'] ?>',
-    'OverloadFrames': '<?php echo $preset['OverloadFrames'] ?>',
-    'ExtendAlarmFrames': '<?php echo $preset['ExtendAlarmFrames'] ?>'
+    'MinPixelThreshold': '<?php echo validJsStr($preset['MinPixelThreshold']) ?>',
+    'MaxPixelThreshold': '<?php echo validJsStr($preset['MaxPixelThreshold']) ?>',
+    'FilterX': '<?php echo validJsStr($preset['FilterX']) ?>',
+    'FilterY': '<?php echo validJsStr($preset['FilterY']) ?>',
+    'MinAlarmPixels': '<?php echo validJsStr($preset['MinAlarmPixels']) ?>',
+    'MaxAlarmPixels': '<?php echo validJsStr($preset['MaxAlarmPixels']) ?>',
+    'MinFilterPixels': '<?php echo validJsStr($preset['MinFilterPixels']) ?>',
+    'MaxFilterPixels': '<?php echo validJsStr($preset['MaxFilterPixels']) ?>',
+    'MinBlobPixels': '<?php echo validJsStr($preset['MinBlobPixels']) ?>',
+    'MaxBlobPixels': '<?php echo validJsStr($preset['MaxBlobPixels']) ?>',
+    'MinBlobs': '<?php echo validJsStr($preset['MinBlobs']) ?>',
+    'MaxBlobs': '<?php echo validJsStr($preset['MaxBlobs']) ?>',
+    'OverloadFrames': '<?php echo validJsStr($preset['OverloadFrames']) ?>',
+    'ExtendAlarmFrames': '<?php echo validJsStr($preset['ExtendAlarmFrames']) ?>'
 };
 <?php
 } # end foreach preset
@@ -39,25 +41,48 @@ var zone = {
     'Name': '<?php echo validJsStr($zone['Name']) ?>',
     'Id': <?php echo validJsStr($zone['Id']) ?>,
     'MonitorId': <?php echo validJsStr($zone['MonitorId']) ?>,
-    'CheckMethod': '<?php echo $zone['CheckMethod'] ?>',
-    'AlarmRGB': '<?php echo $zone['AlarmRGB'] ?>',
+    'CheckMethod': '<?php echo validJsStr($zone['CheckMethod']) ?>',
+    'AlarmRGB': '<?php echo validJsStr($zone['AlarmRGB']) ?>',
     'NumCoords': <?php echo $zone['NumCoords'] ?>,
-    'Coords': '<?php echo $zone['Coords'] ?>',
+    'Coords': '<?php echo validJsStr($zone['Coords']) ?>',
     'Area': <?php echo $zone['Area'] ?>
 };
 
 zone['Points'] = new Array();
 <?php
-for ( $i = 0; $i < count($newZone['Points']); $i++ ) {
+for ( $i = 0; $i < count($zone['Points']); $i++ ) {
 ?>
-zone['Points'][<?php echo $i ?>] = { 'x': <?php echo $newZone['Points'][$i]['x'] ?>, 'y': <?php echo $newZone['Points'][$i]['y'] ?> };
+zone['Points'][<?php echo $i ?>] = { 'x': <?php echo $zone['Points'][$i]['x'] ?>, 'y': <?php echo $zone['Points'][$i]['y'] ?> };
 <?php
 }
 ?>
 
-var maxX = <?php echo $monitor->ViewWidth()-1 ?>;
-var maxY = <?php echo $monitor->ViewHeight()-1 ?>;
-var monitorArea = <?php echo $monitor->ViewWidth() * $monitor->ViewHeight() ?>;
+var maxX = 100;
+var maxY = 100;
+var monitorArea = 10000;
+var monitorPixelArea = <?php echo $monitor->ViewWidth() * $monitor->ViewHeight() ?>;
+
+var monitorData = new Array();
+monitorData[monitorData.length] = {
+  'id': <?php echo $monitor->Id() ?>,
+  'name': '<?php echo validJsStr($monitor->Name()) ?>',
+  'connKey': <?php echo $monitor->connKey() ?>,
+  'width': <?php echo $monitor->ViewWidth() ?>,
+  'height':<?php echo $monitor->ViewHeight() ?>,
+  'janusEnabled':<?php echo $monitor->JanusEnabled() ?>,
+  'RTSP2WebEnabled': <?php echo $monitor->RTSP2WebEnabled() ?>,
+  'RTSPServer':<?php echo $monitor->RTSPServer() ? 'true' : 'false' ?>,
+  'StreamChannel': '<?php echo validJsStr($monitor->StreamChannel()) ?>',
+  'DefaultPlayer':'<?php echo validJsStr($monitor->DefaultPlayer()) ?>',
+  'Go2RTCEnabled': <?php echo $monitor->Go2RTCEnabled() ?>,
+  'url': '<?php echo $monitor->UrlToIndex( ZM_MIN_STREAMING_PORT ? ($monitor->Id() + ZM_MIN_STREAMING_PORT) : '') ?>',
+  'url_to_zms': '<?php echo $monitor->UrlToZMS( ZM_MIN_STREAMING_PORT ? ($monitor->Id() + ZM_MIN_STREAMING_PORT) : '') ?>',
+  'type': '<?php echo validJsStr($monitor->Type()) ?>',
+  'capturing': '<?php echo validJsStr($monitor->Capturing()) ?>',
+  'refresh': '<?php echo validJsStr($monitor->Refresh()) ?>',
+  'janus_pin': '<?php echo validJsStr($monitor->Janus_Pin()) ?>'
+};
+
 var selfIntersecting = <?php echo $selfIntersecting ? 'true' : 'false' ?>;
 
 var selfIntersectingString = '<?php echo addslashes(translate('SelfIntersecting')) ?>';
@@ -76,54 +101,36 @@ var minBlobLtMinFilterString = '<?php echo addslashes(translate('MinBlobLtMinFil
 var minBlobsUnsetString = '<?php echo addslashes(translate('MinBlobsUnset')) ?>';
 var minBlobsLtMaxString = '<?php echo addslashes(translate('MinBlobsLtMax')) ?>';
 
+var zoneObjectSizeStrings = {
+  'filterTooSmall': '<?php echo addslashes(translate('ObjectSizeFilterTooSmall')) ?>',
+  'inactive': '<?php echo addslashes(translate('ObjectSizeInactive')) ?>',
+  'useImage': '<?php echo addslashes(translate('ObjectImageUse')) ?>',
+  'liveView': '<?php echo addslashes(translate('ObjectImageLive')) ?>',
+  'notAnImage': '<?php echo addslashes(translate('ObjectImageNotAnImage')) ?>',
+  'sizeNeeded': '<?php echo addslashes(translate('ObjectSizeNeeded')) ?>'
+};
+
+var deleteString = "<?php echo translate('Delete') ?>";
 //
 // Imported from watch.js.php and modified for new zone edit view
 //
 
-var STATE_IDLE = <?php echo STATE_IDLE ?>;
-var STATE_PREALARM = <?php echo STATE_PREALARM ?>;
-var STATE_ALARM = <?php echo STATE_ALARM ?>;
-var STATE_ALERT = <?php echo STATE_ALERT ?>;
-var STATE_TAPE = <?php echo STATE_TAPE ?>;
 
-var stateStrings = new Array();
-stateStrings[STATE_IDLE] = "<?php echo translate('Idle') ?>";
-stateStrings[STATE_PREALARM] = "<?php echo translate('Idle') ?>";
-stateStrings[STATE_ALARM] = "<?php echo translate('Alarm') ?>";
-stateStrings[STATE_ALERT] = "<?php echo translate('Alert') ?>";
-stateStrings[STATE_TAPE] = "<?php echo translate('Record') ?>";
+const POPUP_ON_ALARM = false;
 
-var pauseString = "<?php echo translate('Pause') ?>";
-var playString = "<?php echo translate('Play') ?>";
+var streamMode = "<?php echo validJsStr($streamMode) ?>";
 
-var deleteString = "<?php echo translate('Delete') ?>";
-
-var CMD_PAUSE = <?php echo CMD_PAUSE ?>;
-var CMD_PLAY = <?php echo CMD_PLAY ?>;
-var CMD_STOP = <?php echo CMD_STOP ?>;
-var CMD_QUERY = <?php echo CMD_QUERY ?>;
-
-var SCALE_BASE = <?php echo SCALE_BASE ?>;
-
-var SOUND_ON_ALARM = <?php echo ZM_WEB_SOUND_ON_ALARM ?>;
-
-var streamMode = "<?php echo $streamMode ?>";
-
-var connKey = '<?php echo $connkey ?>';
+var connKey = '<?php echo validJsStr($connkey) ?>';
 
 var monitorId = <?php echo $monitor->Id() ?>;
 var monitorUrl = '<?php echo ( $monitor->UrlToIndex() ) ?>';
 
-var streamSrc = "<?php echo preg_replace( '/&amp;/', '&', $streamSrc ) ?>";
-
 var statusRefreshTimeout = <?php echo 1000*ZM_WEB_REFRESH_STATUS ?>;
 var imageRefreshTimeout = <?php echo 1000*ZM_WEB_REFRESH_IMAGE ?>;
 
-var canEditMonitors = <?php echo canEdit( 'Monitors' )?'true':'false' ?>;
-var canStreamNative = <?php echo canStreamNative()?'true':'false' ?>;
+var canStream = <?php echo canStream()?'true':'false' ?>;
 
-var canPlayPauseAudio = Browser.ie;
-
-var refreshApplet = <?php echo (canStreamApplet() && $streamMode == "jpeg")?'true':'false' ?>;
-var appletRefreshTime = <?php echo ZM_RELOAD_CAMBOZOLA ?>;
-
+var translate = {
+  "Showing Analysis": '<?php echo translate('Showing Analysis'); ?>',
+  "Not Showing Analysis": '<?php echo translate('Not Showing Analysis'); ?>'
+};

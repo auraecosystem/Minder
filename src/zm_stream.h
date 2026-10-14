@@ -1,42 +1,53 @@
 //
 // ZoneMinder Stream Interfaces, $Date$, $Revision$
 // Copyright (C) 2001-2008 Philip Coombes
-// 
+//
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
 // as published by the Free Software Foundation; either version 2
 // of the License, or (at your option) any later version.
-// 
+//
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
-// 
+//
 // You should have received a copy of the GNU General Public License
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-// 
+//
 
 #ifndef ZM_STREAM_H
 #define ZM_STREAM_H
 
-#include <sys/un.h>
-#include <sys/socket.h>
-
-#include "zm.h"
+#include "zm_box.h"
+#include "zm_logger.h"
 #include "zm_mpeg.h"
+#include "zm_time.h"
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <sys/un.h>
 
+class Image;
 class Monitor;
 
-#define TV_2_FLOAT( tv ) ( double((tv).tv_sec) + (double((tv).tv_usec) / 1000000.0) )
+#define BOUNDARY "ZoneMinderFrame"
 
 class StreamBase {
-public:
-  typedef enum { STREAM_JPEG, STREAM_RAW, STREAM_ZIP, STREAM_SINGLE, STREAM_MPEG } StreamType;
+ public:
+  typedef enum {
+    STREAM_JPEG,
+    STREAM_RAW,
+    STREAM_ZIP,
+    STREAM_SINGLE,
+    STREAM_MPEG
+  } StreamType;
+  typedef enum { FRAME_NORMAL, FRAME_ANALYSIS } FrameType;
 
-protected:
-  static const int MAX_STREAM_DELAY = 5; // Seconds
-  static const int MAX_SLEEP_USEC = 500000; // .5 Seconds
+ protected:
+  static constexpr Seconds MAX_STREAM_DELAY = Seconds(5);
+  static constexpr Milliseconds MAX_SLEEP = Milliseconds(500);
 
   static const StreamType DEFAULT_TYPE = STREAM_JPEG;
   enum { DEFAULT_RATE=ZM_RATE_BASE };
@@ -44,8 +55,11 @@ protected:
   enum { DEFAULT_ZOOM=ZM_SCALE_BASE };
   enum { DEFAULT_MAXFPS=10 };
   enum { DEFAULT_BITRATE=100000 };
+  // Offset applied when encoding a signed replay rate as a uint16 for CMD_VARPLAY.
+  // On the wire: uint16 = rate + VARPLAY_RATE_OFFSET.  Receiver subtracts the same offset.
+  static const int VARPLAY_RATE_OFFSET = 32768;
 
-protected:
+ protected:
   typedef struct {
     int msg_type;
     char msg_data[16];
@@ -56,25 +70,70 @@ protected:
     char msg_data[256];
   } DataMsg;
 
-  typedef enum { MSG_CMD=1, MSG_DATA_WATCH, MSG_DATA_EVENT } MsgType;
-  typedef enum { CMD_NONE=0, CMD_PAUSE, CMD_PLAY, CMD_STOP, CMD_FASTFWD, CMD_SLOWFWD, CMD_SLOWREV, CMD_FASTREV, CMD_ZOOMIN, CMD_ZOOMOUT, CMD_PAN, CMD_SCALE, CMD_PREV, CMD_NEXT, CMD_SEEK, CMD_VARPLAY, CMD_GET_IMAGE, CMD_QUIT, CMD_QUERY=99 } MsgCommand;
+  typedef enum {
+    MSG_CMD=1,
+    MSG_DATA_WATCH,
+    MSG_DATA_EVENT
+  } MsgType;
 
-protected:
-  Monitor *monitor;
+  typedef enum {
+    CMD_NONE=0,
+    CMD_PAUSE,
+    // CMD_PLAY resumes or starts playback at normal speed (1x, i.e. replay_rate = ZM_RATE_BASE).
+    // Use CMD_VARPLAY to resume at an arbitrary rate.
+    CMD_PLAY,
+    // CMD_STOP halts all streaming activity.  Unlike CMD_PAUSE, no keepalive frames are sent
+    // and the stream does no work until a new command is received.
+    CMD_STOP,
+    CMD_FASTFWD,
+    CMD_SLOWFWD,
+    CMD_SLOWREV,
+    CMD_FASTREV,
+    CMD_ZOOMIN,
+    CMD_ZOOMOUT,
+    CMD_PAN,
+    CMD_SCALE,
+    CMD_PREV,
+    CMD_NEXT,
+    CMD_SEEK,
+    // CMD_VARPLAY resumes or starts playback at a caller-specified rate.
+    // The desired rate is packed as a big-endian uint16 offset by +VARPLAY_RATE_OFFSET so that
+    // the range [-32768, +32767] maps to [0, 65535].  ZM_RATE_BASE (100) represents 1x speed, so:
+    //   32868 (= VARPLAY_RATE_OFFSET + 100) encodes 1x forward playback,
+    //   32668 (= VARPLAY_RATE_OFFSET - 100) encodes 1x reverse playback.
+    // Negative rates play in reverse; rates > ZM_RATE_BASE play faster than real-time.
+    // MSG payload: msg_data[1..2] = (rate + VARPLAY_RATE_OFFSET) as network-byte-order uint16.
+    CMD_VARPLAY,
+    CMD_GET_IMAGE,
+    CMD_QUIT,
+    CMD_MAXFPS,
+    CMD_ANALYZE_ON,
+    CMD_ANALYZE_OFF,
+    CMD_ZOOMSTOP,
+    CMD_QUERY=99
+  } MsgCommand;
+
+ protected:
+  int monitor_id;
+  std::shared_ptr<Monitor> monitor;
 
   StreamType type;
+  std::atomic<FrameType> frame_type;
   const char *format;
-  int replay_rate;
-  int scale;
+  // Written by the command thread (processCommand), read by the streaming
+  // loop every iteration. Atomic so the accesses are defined rather than a
+  // data race; see https://github.com/ZoneMinder/zoneminder/issues/4939
+  std::atomic<int> replay_rate;
+  std::atomic<int> scale;
   int last_scale;
-  int zoom;
+  std::atomic<int> zoom;
   int last_zoom;
-  double maxfps;
+  Box last_crop;
   int bitrate;
   unsigned short last_x, last_y;
-  unsigned short x, y;
-
-protected:
+  std::atomic<unsigned short> x, y;
+  bool send_analysis;
+  bool send_objdetect;
   int connkey;
   int sd;
   char loc_sock_path[108];
@@ -83,99 +142,142 @@ protected:
   struct sockaddr_un rem_addr;
   char sock_path_lock[108];
   int lock_fd;
+  std::atomic<bool> paused;
+  std::atomic<bool> stopped;
+  std::atomic<int> step;
+  std::atomic<bool> send_twice;  // flag to send the same frame twice
 
-protected:
-  bool paused;
-  int step;
+  TimePoint now;
+  TimePoint last_comm_update;
 
-  struct timeval now;
-  struct timeval last_comm_update;
+  std::atomic<double> maxfps;
+  double base_fps;        // Should be capturing fps, hence a rough target
+  double effective_fps;   // Target fps after taking max_fps into account
+  double actual_fps;      // sliding calculated actual streaming fps achieved
+  TimePoint last_fps_update;
+  int frame_count;      // Count of frames sent
+  int last_frame_count; // Used in calculating actual_fps from frame_count - last_frame_count
 
-  double base_fps;
-  double effective_fps;
   int frame_mod;
+  int frames_to_send;
 
-  double last_frame_sent;
-  struct timeval last_frame_timestamp;
+  TimePoint last_frame_sent;
+  SystemTimePoint last_frame_timestamp;
+  TimePoint when_to_send_next_frame;  // When to send next frame so if now < send_next_frame, skip
 
-#if HAVE_LIBAVCODEC   
   VideoStream *vid_stream;
-#endif // HAVE_LIBAVCODEC   
 
   CmdMsg msg;
+  bool got_command = false; // commands like zoom should output a frame even if paused
 
-protected:
-  bool loadMonitor( int monitor_id );
+  uint8_t *temp_img_buffer;     // Used when encoding or sending file data
+  size_t temp_img_buffer_size;
+
+ protected:
+  std::mutex monitor_mutex;  // Protects monitor connect/disconnect vs command thread access
+
+  bool loadMonitor(int monitor_id);
   bool checkInitialised();
-  void updateFrameRate( double fps );
-  Image *prepareImage( Image *image );
-  bool sendTextFrame( const char *text );
-  bool checkCommandQueue();
-  virtual void processCommand( const CmdMsg *msg )=0;
+  void updateFrameRate(double fps);
+  // pre_scaled_by is the scale the caller already produced the image at, for
+  // callers that have to colour convert anyway and can therefore scale in the
+  // same swscale pass. 0 means the image is at full size. See #3681.
+  Image *prepareImage(Image *image, int pre_scaled_by = 0);
 
-public:
-  StreamBase() {
-    monitor = 0;
+  // Dimensions a caller should produce the source image at so the scale folds
+  // into a colour conversion it has to do anyway. Returns the scale used, which
+  // is what prepareImage wants as pre_scaled_by, or 0 when the fast path does
+  // not apply and the image must be produced at base_width x base_height.
+  int preScaleDimensions(int base_width, int base_height, int &width, int &height) const;
+  void checkCommandQueue();
+  virtual void processCommand(const CmdMsg *msg)=0;
+  void reserveTempImgBuffer(size_t size);
 
-    type = DEFAULT_TYPE;
-    format = "";
-    replay_rate = DEFAULT_RATE;
-    last_scale = scale = DEFAULT_SCALE;
-    last_zoom = zoom = DEFAULT_ZOOM;
-    maxfps = DEFAULT_MAXFPS;
-    bitrate = DEFAULT_BITRATE;
+ public:
+  StreamBase():
+    monitor_id(0),
+    monitor(nullptr),
+    type(DEFAULT_TYPE),
+    frame_type(FRAME_NORMAL),
+    format(""),
+    replay_rate(DEFAULT_RATE),
+    scale(DEFAULT_SCALE),
+    last_scale(DEFAULT_SCALE),
+    zoom(DEFAULT_ZOOM),
+    last_zoom(DEFAULT_ZOOM),
+    bitrate(DEFAULT_BITRATE),
+    last_x(0),
+    last_y(0),
+    x(0),
+    y(0),
+    send_analysis(false),
+    send_objdetect(false),
+    connkey(0),
+    sd(-1),
+    lock_fd(-1),
+    paused(false),
+    stopped(false),
+    step(0),
+    send_twice(false),
+    maxfps(DEFAULT_MAXFPS),
+    base_fps(0.0),
+    effective_fps(0.0),
+    actual_fps(0.0),
+    frame_count(0),
+    last_frame_count(0),
+    frame_mod(1),
+    frames_to_send(-1),
+    got_command(false),
+    temp_img_buffer(nullptr),
+    temp_img_buffer_size(0) {
+    memset(&loc_sock_path, 0, sizeof(loc_sock_path));
+    memset(&loc_addr, 0, sizeof(loc_addr));
+    memset(&rem_sock_path, 0, sizeof(rem_sock_path));
+    memset(&rem_addr, 0, sizeof(rem_addr));
+    memset(&sock_path_lock, 0, sizeof(sock_path_lock));
+    last_fps_update = std::chrono::steady_clock::now();
 
-    paused = false;
-    step = 0;
-    last_x = x = 0;
-    last_y = y = 0;
-
-    connkey = 0;
-    sd = -1;
-    lock_fd = 0;
-    memset( &loc_sock_path, 0, sizeof(loc_sock_path) );
-    memset( &loc_addr, 0, sizeof(loc_addr) );
-    memset( &rem_sock_path, 0, sizeof(rem_sock_path) );
-    memset( &rem_addr, 0, sizeof(rem_addr) );
-    memset( &sock_path_lock, 0, sizeof(sock_path_lock) );
-
-    base_fps = 0.0;
-    effective_fps = 0.0;
-    frame_mod = 1;
-
-#if HAVE_LIBAVCODEC   
-    vid_stream = 0;
-#endif // HAVE_LIBAVCODEC   
-    last_frame_sent = 0.0;
-    last_frame_timestamp = (struct timeval){0};
+    vid_stream = nullptr;
     msg = { 0, { 0 } };
   }
   virtual ~StreamBase();
 
-  void setStreamType( StreamType p_type ) {
+  void setStreamType(StreamType p_type) {
     type = p_type;
+#if ! HAVE_ZLIB_H
+    if ( type == STREAM_ZIP ) {
+      Error("zlib is required for zipped images. Falling back to raw image");
+      type = STREAM_RAW;
+    }
+#endif
   }
-  void setStreamFormat( const char *p_format ) {
+  void setStreamFrameType(FrameType p_type) {
+    frame_type = p_type;
+  }
+  void setStreamFormat(const char *p_format) {
     format = p_format;
   }
-  void setStreamScale( int p_scale ) {
+  void setStreamScale(int p_scale) {
     scale = p_scale;
-    if ( ! scale )
+    if ( !scale )
       scale = DEFAULT_SCALE;
   }
-  void setStreamReplayRate( int p_rate ) {
-    Debug(2,"Setting replay_rate %d", p_rate);
+  void setStreamReplayRate(int p_rate) {
+    Debug(1, "Setting replay_rate %d", p_rate);
     replay_rate = p_rate;
   }
-  void setStreamMaxFPS( double p_maxfps ) {
+  void setStreamMaxFPS(double p_maxfps) {
+    Debug(1, "Setting max fps to %f", p_maxfps);
     maxfps = p_maxfps;
   }
-  void setStreamBitrate( int p_bitrate ) {
+  void setStreamBitrate(int p_bitrate) {
     bitrate = p_bitrate;
   }
-  void setStreamQueue( int p_connkey ) {
+  void setStreamQueue(int p_connkey) {
     connkey = p_connkey;
   }
+  void setFramesToSend(int p_frames_to_send) { frames_to_send = p_frames_to_send; }
+  bool sendTextFrame(const char *text);
   virtual void openComms();
   virtual void closeComms();
   virtual void runStream()=0;

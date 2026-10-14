@@ -53,15 +53,28 @@
 
 .consoleTable {
     width: 100%;
+    height: 100%; /* parent is flex-height */
 }
 
 .consoleTable tr.highlight {
     background-color: #eeeeee;
 }
 
+.consoleTable thead {
+  flex: 0 0 auto;
+}
+.consoleTable tbody {
+  flex: 1 1 auto;
+}
+
 .consoleTable thead th {
     padding-bottom: 4px;
     vertical-align: middle;
+}
+
+.consoleTable thead th .material-icons {
+    vertical-align: middle;
+    line-height: inherit;
 }
 
 .consoleTable tfoot td {
@@ -75,7 +88,7 @@
 
 .consoleTable .colMark {
     width: 32px;
-    text-align: left;
+    text-align: center;
 }
 
 .consoleTable .colEvents {
@@ -90,6 +103,11 @@
     text-align: center;
 }
 
+.consoleTable .colId {
+    width: 70px;
+    text-align: center;
+}
+
 .consoleTable .colLeftButtons {
     text-align: left;
 }
@@ -99,15 +117,117 @@
 .StatusFilter select {
   min-width: 130px;
 }
+#FunctionFunction {
+  margin-bottom: 2rem;
+}
 
-.MonitorNameFilter,
+/* .MonitorNameFilter,
 .FunctionFilter,
 .StatusFilter,
 .SourceFilter,
 .MonitorFilter {
   display: inline-block;
+} */
+
+#monitorsContainer {
+  flex: 1 1 auto;
+  overflow: hidden; /* Ensures height is correct if content too large */
 }
-.MonitorNameFilter input,
-.SourceFilter input {
-  padding: 3px 5px 4px 5px;
+
+#monitorFiltersForm,
+#monitorForm
+{
+  height: 100%;
+  /*
+  display: flex;
+  flex-flow: column nowrap;
+  flex: 1 1 auto;
+  */
+}
+#monitorList {
+}
+/*
+body.sticky #monitorList {
+  overflow: auto; 
+}
+*/
+body.sticky #monitorList thead {
+  position: sticky;
+  top: 0;
+  box-shadow: 0 0px 0, 0 -3px 0 #dfe4ea;
+}
+#toolbar,
+#contentButtons {
+  float: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.rightButtons {
+  margin-left: auto;
+}
+.statusBreakdown {
+  margin-right: auto;
+}
+
+@media screen and (max-width:1280px) {
+}
+@media screen and (max-width:900px) {
+  #header {
+    flex-wrap: wrap;
+  }
+}
+@media screen and (max-width:564px) {
+  button .text {
+    display: none;
+  }
+  #contentButtons {
+    padding: 0;
+  }
+  button .material-icons {
+    font-size: 16px;
+  }
+}
+
+.colThumbnail {
+  position: relative;
+}
+
+div.colThumbnail {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  justify-content: center;
+  min-width: 100%;
+}
+
+/* Make the boot-strap table monitor list scrollable instead of content div */
+#content {
+  display: flex;
+  flex-direction: column;
+}
+#monitorList {
+  overflow: hidden;
+  height: 100%;
+}
+
+#monitorList .bootstrap-table {
+  overflow: hidden;
+  height: 100%;
+}
+
+#monitorList .bootstrap-table {
+  display: flex;
+  flex-direction: column;
+    flex-wrap: nowrap;
+}
+#monitorList .fixed-table-container {
+  overflow: hidden; /* Ensures height doesn't expand */
+}
+
+#fbpanel {
+  flex: 0 0 auto; /* Don't grow, don't shrink, size based on content */
+}
+.bootstrap-table .fixed-table-toolbar .bs-bars {
+  margin: 0;
 }

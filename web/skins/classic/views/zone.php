@@ -26,8 +26,6 @@ if ( !($mid and canEdit('Monitors', $mid)) ) {
 
 $zid = (!empty($_REQUEST['zid'])) ? validInt($_REQUEST['zid']) : 0;
 
-$scale = SCALE_BASE;
-
 $hicolor = '0x00ff00'; // Green
 
 $presets = array();
@@ -45,35 +43,35 @@ foreach ( getEnumValues('Zones', 'Type') as $optType ) {
 }
 
 $optUnits = array();
-foreach ( getEnumValues( 'Zones', 'Units' ) as $optUnit ) {
+foreach ( getEnumValues('Zones', 'Units') as $optUnit ) {
   $optUnits[$optUnit] = $optUnit;
 }
 
 $optCheckMethods = array();
-foreach ( getEnumValues( 'Zones', 'CheckMethod' ) as $optCheckMethod ) {
+foreach ( getEnumValues('Zones', 'CheckMethod') as $optCheckMethod ) {
   $optCheckMethods[$optCheckMethod] = $optCheckMethod;
 }
 
-$monitor = new ZM\Monitor( $mid );
+$monitor = new ZM\Monitor($mid);
 
 $minX = 0;
-$maxX = $monitor->ViewWidth()-1;
+$maxX = 100;
 $minY = 0;
-$maxY = $monitor->ViewHeight()-1;
+$maxY = 100;
 
-if ( !isset($newZone) ) {
+if ( !isset($zone) ) {
   if ( $zid > 0 ) {
-    $zone = dbFetchOne('SELECT * FROM Zones WHERE MonitorId = ? AND Id=?', NULL, array($monitor->Id(), $zid));
+    $zone = dbFetchOne('SELECT * FROM Zones WHERE MonitorId=? AND Id=?', NULL, array($monitor->Id(), $zid));
   } else {
     $zone = array(
       'Id' => 0,
       'Name' => translate('New'),
       'Type'  =>  'Active',
-			'Units'	=>	'Pixels',
+			'Units'	=>	'Percent',
       'MonitorId' => $monitor->Id(),
       'NumCoords' => 4,
-      'Coords' => sprintf('%d,%d %d,%d, %d,%d %d,%d', $minX, $minY, $maxX, $minY, $maxX, $maxY, $minX, $maxY),
-      'Area' => $monitor->ViewWidth() * $monitor->ViewHeight(),
+      'Coords' => '0.00,0.00 100.00,0.00 100.00,100.00 0.00,100.00',
+      'Area' => 10000,
       'AlarmRGB' => 0xff0000,
       'CheckMethod' => 'Blobs',
       'MinPixelThreshold' => '',
@@ -94,213 +92,334 @@ if ( !isset($newZone) ) {
   }
   $zone['Points'] = coordsToPoints($zone['Coords']);
   $zone['AreaCoords'] = preg_replace('/\s+/', ',', $zone['Coords']);
-
-  $newZone = $zone;
 } # end if new Zone
 
+# Auto-detect pixel coordinates and convert to percentages
+convertPixelPointsToPercent($zone['Points'], $monitor->ViewWidth(), $monitor->ViewHeight());
+# Always store as percentages
+$zone['Units'] = 'Percent';
+
 # Ensure Zone fits within the limits of the Monitor
-limitPoints($newZone['Points'], $minX, $minY, $maxX, $maxY);
+limitPoints($zone['Points'], $minX, $minY, $maxX, $maxY);
 
-ksort($newZone['Points'], SORT_NUMERIC);
+ksort($zone['Points'], SORT_NUMERIC);
 
-$newZone['Coords'] = pointsToCoords($newZone['Points']);
-$newZone['Area'] = getPolyArea($newZone['Points']);
-$newZone['AreaCoords'] = preg_replace('/\s+/', ',', $newZone['Coords']);
-$selfIntersecting = isSelfIntersecting($newZone['Points']);
+$zone['Coords'] = pointsToCoords($zone['Points']);
+$zone['Area'] = getPolyArea($zone['Points']);
+$zone['AreaCoords'] = preg_replace('/\s+/', ',', $zone['Coords']);
+$selfIntersecting = isSelfIntersecting($zone['Points']);
+
+# Threshold values are stored as percentages of zone area (0-100).
+# Values > 100 are unconverted pixel counts from before the migration;
+# convert them to percentages so the UI displays correctly.
+$zonePixelArea = $zone['Area'] / 10000.0 * $monitor->ViewWidth() * $monitor->ViewHeight();
+if ($zonePixelArea > 0) {
+  foreach (array('MinAlarmPixels', 'MaxAlarmPixels', 'MinFilterPixels', 'MaxFilterPixels', 'MinBlobPixels', 'MaxBlobPixels') as $field) {
+    if (isset($zone[$field]) && $zone[$field] > 100) {
+      $zone[$field] = round($zone[$field] / $zonePixelArea * 100, 2);
+    }
+  }
+}
+
+# Rectangle measurement ratios, and the only definition of their defaults -
+# zone-object-size.js falls back to whatever is rendered here. Read from the
+# cookie server side, as the player selector below does with zmZonePlayer.
+#
+# 25% of the drawn rectangle is docs/userguide/definezone.rst [J]; the rest of
+# the box is background, and low-contrast pixels never clear MinPixelThreshold.
+# 70% and 86% match every shipped Blobs preset (zm_create.sql.in ZonePresets:
+# 0.5/0.35/0.3, 5/3.5/3, 1/0.7/0.6, 0.2/0.14/0.12), so the steps are a property
+# of the pipeline rather than a sensitivity dial.
+$rectangle_ratios = array(
+  'objectFraction'    => array('cookie' => 'zmZoneObjectFraction', 'value' => 25),
+  'objectFilterRatio' => array('cookie' => 'zmZoneFilterRatio',    'value' => 70),
+  'objectBlobRatio'   => array('cookie' => 'zmZoneBlobRatio',      'value' => 86),
+);
+foreach ($rectangle_ratios as $id => $spec) {
+  if (!isset($_COOKIE[$spec['cookie']])) continue;
+  $saved = validInt($_COOKIE[$spec['cookie']]);
+  if ($saved >= 1 and $saved <= 100) $rectangle_ratios[$id]['value'] = $saved;
+}
 
 $focusWindow = true;
-$connkey = generateConnKey();
-$streamSrc = '';
-$streamMode = '';
 # Have to do this here, because the .js.php references somethings figured out when generating the streamHTML
-$StreamHTML = getStreamHTML($monitor, array('scale'=>$scale));
+$monitor->connKey();
+
+# So I'm thinking now that 50% of screen real-estate with a minimum of 640px. 
+# scale should be floor(whatever that width is/actual width)
+# So we need javascript to figure out browser width, figure out scale and then activate the stream.  
 
 xhtmlHeaders(__FILE__, translate('Zone'));
+getBodyTopHTML();
+echo getNavBarHTML();
 ?>
-<body>
   <div id="page">
-    <div id="header">
-      <h2><?php echo translate('Monitor') ?> <?php echo $monitor->Name() ?> - <?php echo translate('Zone') ?> <?php echo $newZone['Name'] ?></h2>
+    <div class="w-100">
+      <div class="float-left pl-3 pt-1">
+        <button type="button" id="backBtn" class="btn btn-normal" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Back') ?>" disabled><i class="fa fa-arrow-left"></i></button>
+        <button type="button" id="refreshBtn" class="btn btn-normal" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Refresh') ?>" ><i class="fa fa-refresh"></i></button>
+      </div>
+      <div class="float-right pr-3 pt-1">
+        <button type="button" id="saveBtn" value="Save" class="btn btn-normal" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Save') ?>"<?php if (!canEdit('Monitors') || (false && $selfIntersecting)) { ?> disabled="disabled"<?php } ?>><i class="fa fa-save"></i></button>
+        <button type="button" id="resetBtn" value="Reset" class="btn btn-normal" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Reset') ?>" disabled="disabled"><i class="fa fa-undo"></i></button>
+        <button type="button" id="cancelBtn" value="Cancel" class="btn btn-normal" data-toggle="tooltip" data-placement="top" title="<?php echo translate('Cancel') ?>"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="w-100 pt-2">
+        <h2><?php echo translate('Monitor').' '.validHtmlStr($monitor->Name()).' - '.translate('Zone').' '.validHtmlStr($zone['Name']) ?></h2>
+      </div>
     </div>
     <div id="content">
-      <form name="zoneForm" id="zoneForm" method="post" action="?" onkeypress="return event.keyCode != 13;">
+      <form name="zoneForm" id="zoneForm" method="post" action="?">
+        <input type="hidden" name="REFERER" value="<?php echo isset($_SERVER['HTTP_REFERER']) ? validHtmlStr($_SERVER['HTTP_REFERER']) : '' ?>"/> 
         <input type="hidden" name="view" value="<?php echo $view ?>"/>
         <input type="hidden" name="action" value="zone"/>
         <input type="hidden" name="mid" value="<?php echo $mid ?>"/>
         <input type="hidden" name="zid" value="<?php echo $zid ?>"/>
-        <input type="hidden" name="newZone[NumCoords]" value="<?php echo count($newZone['Points']) ?>"/>
-        <input type="hidden" name="newZone[Coords]" value="<?php echo $newZone['Coords'] ?>"/>
-        <input type="hidden" name="newZone[Area]" value="<?php echo $newZone['Area'] ?>"/>
+        <input type="hidden" name="newZone[NumCoords]" value="<?php echo count($zone['Points']) ?>"/>
+        <input type="hidden" name="newZone[Coords]" value="<?php echo $zone['Coords'] ?>"/>
         <input type="hidden" name="newZone[AlarmRGB]"/>
 
-        <div id="definitionPanel">
-					<div class="monitor">
-						<div id="imagePanel">
-							<div id="imageFrame" style="position: relative; width: <?php echo reScale($monitor->ViewWidth(), $scale) ?>px; height: <?php echo reScale($monitor->ViewHeight(), $scale) ?>px;">
-								<?php echo $StreamHTML; ?>
-								<svg id="zoneSVG" class="zones" style="position: absolute; top: 0; left: 0; width: <?php echo reScale($monitor->ViewWidth(), $scale) ?>px; height: <?php echo reScale($monitor->ViewHeight(), $scale) ?>px; background: none;">
-	<?php
-	if ( $zone['Id'] ) {
-		$other_zones = dbFetchAll('SELECT * FROM Zones WHERE MonitorId = ? AND Id != ?', NULL, array($monitor->Id(), $zone['Id']));
-	} else {
-		$other_zones = dbFetchAll('SELECT * FROM Zones WHERE MonitorId = ?', NULL, array($monitor->Id()));
-	}
-	if ( count($other_zones) ) {
-		$html = '';
-		foreach ( $other_zones as $other_zone ) {
-			$other_zone['AreaCoords'] = preg_replace('/\s+/', ',', $other_zone['Coords']);
-			$html .= '<polygon id="zonePoly'.$other_zone['Id'].'" points="'. $other_zone['AreaCoords'] .'" class="'. $other_zone['Type'] .'"/>';
-		}
-		echo $html;
-	}
-	?>
-									<polygon id="zonePoly" points="<?php echo $zone['AreaCoords'] ?>" class="Editing <?php echo $zone['Type'] ?>"/>
-									Sorry, your browser does not support inline SVG
-								</svg>
-							</div>
-						</div>
-						<div id="monitorState">
-							<?php echo translate('State') ?>:&nbsp;<span id="stateValue"></span>&nbsp;-&nbsp;<span id="fpsValue"></span>&nbsp;fps
-						</div>
-					</div>
+				  <div id="imageAndPoints">
+            <style>#imageFeed<?php echo $monitor->Id() ?> { aspect-ratio: <?php echo $monitor->ViewWidth() ?> / <?php echo $monitor->ViewHeight() ?>; }</style>
+            <div id="imageFrame">
+              <?php echo
+$monitor->getStreamHTML(array('mode'=>'single', 'zones'=>false, 'state'=>true, 'analysis'=>true));
+?>
+              <svg id="zoneSVG" class="zones" viewBox="0 0 100 100" preserveAspectRatio="none">
+<?php
+if ( $zone['Id'] ) {
+  $other_zones = dbFetchAll('SELECT * FROM Zones WHERE MonitorId = ? AND Id != ?', NULL, array($monitor->Id(), $zone['Id']));
+} else {
+  $other_zones = dbFetchAll('SELECT * FROM Zones WHERE MonitorId = ?', NULL, array($monitor->Id()));
+}
+if ( count($other_zones) ) {
+  $html = '';
+  foreach ( $other_zones as $other_zone ) {
+    $other_zone['AreaCoords'] = preg_replace('/\s+/', ',', $other_zone['Coords']);
+    $html .= '<polygon id="zonePoly'.$other_zone['Id'].'" points="'. $other_zone['AreaCoords'] .'" class="'. $other_zone['Type'] .'"/>';
+  }
+  echo $html;
+}
+?>
+                <polygon id="zonePoly" points="<?php echo $zone['AreaCoords'] ?>" class="Editing <?php echo $zone['Type'] ?>"/>
+                <rect id="objectRect" x="0" y="0" width="0" height="0" style="display:none"/>
+                Sorry, your browser does not support inline SVG
+              </svg>
+              <button type="button" id="objectImageReplaceBtn" class="btn btn-normal" style="display:none" title="<?php echo translate('ObjectImageLoad') ?>">
+                <i class="material-icons md-18">folder_open</i>
+              </button>
+            </div><?php # imageFrame
+?>
+
+            <div id="StreamControlButtons">
+              <div id="controlButtons">
+                <button type="button" id="analyseBtn" class="btn btn-primary" title="<?php echo translate('Showing Analysis') ?>">
+                  <i class="material-icons md-18">assessment</i>
+                </button>
+                <button type="button" id="pauseBtn" class="btn btn-primary" title="<?php echo translate('Pause') ?>">
+                  <i class="material-icons md-18">pause</i>
+                </button>
+                <button type="button" id="playBtn" class="btn btn-primary" title="<?php echo translate('Play') ?>">
+                  <i class="material-icons md-18">play_arrow</i>
+                </button>
+                <button type="button" id="objectImageBtn" class="btn btn-normal" title="<?php echo translate('ObjectImageUse') ?>">
+                  <i class="material-icons md-18">image</i>
+                </button>
+                <input type="file" id="objectImageFile" accept="image/*" style="display:none"/>
+                <button type="button" id="objectSizeBtn" class="btn btn-normal" title="<?php echo translate('ObjectSizeMeasure') ?>">
+                  <i class="material-icons md-18">highlight_alt</i>
+                </button>
+                <button type="button" id="objectSizeUndoBtn" class="btn btn-normal" style="display:none" title="<?php echo translate('ObjectSizeUndo') ?>">
+                  <i class="material-icons md-18">undo</i>
+                </button>
+              </div>
+              <div id="playerControl">
+                <label for="player"><?php echo translate('Player') ?></label>
+<?php
+                $players = [''=>translate('Auto'), 'zms'=>'ZMS MJPEG'];
+                $players['go2rtc'] = 'Go2RTC Auto';
+                $players['go2rtc_webrtc'] = 'Go2RTC WEBRTC';
+                $players['go2rtc_mse'] = 'Go2RTC MSE';
+                $players['go2rtc_hls'] = 'Go2RTC HLS';
+                $players['rtsp2web_webrtc'] = 'RTSP2Web WEBRTC';
+                $players['rtsp2web_mse'] = 'RTSP2Web MSE';
+                $players['rtsp2web_hls'] = 'RTSP2Web HLS';
+                $players['janus'] = 'Janus';
+                $player = validHtmlStr($monitor->DefaultPlayer());
+                if (isset($_COOKIE['zmZonePlayer']) and isset($players[$_COOKIE['zmZonePlayer']])) {
+                  $player = validHtmlStr($_COOKIE['zmZonePlayer']);
+                }
+                echo htmlSelect('codec', $players, $player, array('data-on-change'=>'changePlayer','id'=>'player','class'=>'chosen'));
+?>
+              </div>
+            </div>
+          </div><!--image & buttons-->
 
 					<div id="settingsPanel">
 						<table id="zoneSettings">
 							<tbody>
 								<tr>
 									<th scope="row"><?php echo translate('Name') ?></th>
-									<td colspan="2"><input type="text" name="newZone[Name]" value="<?php echo $newZone['Name'] ?>"/></td>
+									<td colspan="2"><input type="text" name="newZone[Name]" value="<?php echo validHtmlStr($zone['Name']) ?>"/></td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('Type') ?></th>
-									<td colspan="2"><?php echo htmlSelect('newZone[Type]', $optTypes, $newZone['Type'],
-											array('data-on-change'=>'applyZoneType')); ?></td>
+									<td colspan="2"><?php echo htmlSelect('newZone[Type]', $optTypes, $zone['Type'],
+											array('data-on-change'=>'applyZoneType', 'id'=>'newZone[Type]')); ?></td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('Preset') ?></th>
 									<td colspan="2">
 										<?php echo htmlSelect('presetSelector', $presetNames,
 												( isset($_REQUEST['presetSelector']) ? $_REQUEST['presetSelector'] : null),
-												array('data-on-change'=>'applyPreset', 'onblur'=>'this.selectedIndex=0') )
+												array('data-on-change'=>'applyPreset', 'id'=>'presetSelector') )
 										?></td>
 								</tr>
-								<tr>
-									<th scope="row"><?php echo translate('Units') ?></th>
-                  <td colspan="2">
-<?php
-                        echo htmlSelect('newZone[Units]', $optUnits, $newZone['Units'],
-                        array('data-on-change'=>'applyZoneUnits')
-                        );
-                        # Used later for number inputs
-                        $step = $newZone['Units'] == 'Percent' ? ' step="0.01" max="100"' : '';
-?>
-                  </td>
-								</tr>
+								<input type="hidden" name="newZone[Units]" value="Percent"/>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneAlarmColour') ?></th>
 									<td colspan="2">
-										<input type="number" name="newAlarmRgbR" value="<?php echo ($newZone['AlarmRGB']>>16)&0xff ?>" min="0" max="255"/>
+										<input type="color" id="alarmColour" value="<?php echo sprintf('#%06x', $zone['AlarmRGB'] & 0xffffff) ?>"/>
+										<input type="number" name="newAlarmRgbR" value="<?php echo ($zone['AlarmRGB']>>16)&0xff ?>" min="0" max="255"/>
 										/
-										<input type="number" name="newAlarmRgbG" value="<?php echo ($newZone['AlarmRGB']>>8)&0xff ?>" min="0" max="255"/>
+										<input type="number" name="newAlarmRgbG" value="<?php echo ($zone['AlarmRGB']>>8)&0xff ?>" min="0" max="255"/>
 										/
-										<input type="number" name="newAlarmRgbB" value="<?php echo $newZone['AlarmRGB']&0xff ?>" min="0" max="255"/>
+										<input type="number" name="newAlarmRgbB" value="<?php echo $zone['AlarmRGB']&0xff ?>" min="0" max="255"/>
 									</td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('CheckMethod') ?></th>
-									<td colspan="2"><?php echo htmlSelect('newZone[CheckMethod]', $optCheckMethods, $newZone['CheckMethod']); ?></td>
+									<td colspan="2"><?php echo htmlSelect('newZone[CheckMethod]', $optCheckMethods, $zone['CheckMethod']); ?></td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneMinMaxPixelThres') ?></th>
-									<td><input type="number" name="newZone[MinPixelThreshold]" value="<?php echo $newZone['MinPixelThreshold'] ?>" min="0" max="255"/></td>
-									<td><input type="number" name="newZone[MaxPixelThreshold]" value="<?php echo $newZone['MaxPixelThreshold'] ?>" min="0" max="255"/></td>
+									<td><input type="number" name="newZone[MinPixelThreshold]" value="<?php echo $zone['MinPixelThreshold'] ?>" min="0" max="255"/></td>
+									<td><input type="number" name="newZone[MaxPixelThreshold]" value="<?php echo $zone['MaxPixelThreshold'] ?>" min="0" max="255"/></td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneFilterSize') ?></th>
-									<td><input type="number" name="newZone[FilterX]" value="<?php echo $newZone['FilterX'] ?>" min="0"/></td>
-									<td><input type="number" name="newZone[FilterY]" value="<?php echo $newZone['FilterY'] ?>" min="0"/></td>
+									<td><input type="number" name="newZone[FilterX]" value="<?php echo $zone['FilterX'] ?>" min="0"/></td>
+									<td><input type="number" name="newZone[FilterY]" value="<?php echo $zone['FilterY'] ?>" min="0"/></td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneArea') ?></th>
-									<td colspan="2"><input type="number" name="newZone[TempArea]" value="<?php echo $newZone['Area'] ?>" disabled="disabled"/></td>
+									<td><span class="zoneArea" id="areaPercent"><?php echo $zone['Area'] ?></span>%<input type="hidden" name="newZone[Area]" value="<?php echo $zone['Area'] ?>"/></td>
+									<td><span class="zoneArea" id="areaPixels"></span> px</td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneMinMaxAlarmArea') ?></th>
-                  <td><input type="number" name="newZone[MinAlarmPixels]" value="<?php echo $newZone['MinAlarmPixels'] ?>"<?php echo $step ?> min="0"/></td>
-									<td><input type="number" name="newZone[MaxAlarmPixels]" value="<?php echo $newZone['MaxAlarmPixels'] ?>"<?php echo $step ?> min="0"/></td>
+									<td><input type="number" name="newZone[MinAlarmPixels]" value="<?php echo $zone['MinAlarmPixels'] ?>" step="any" max="100" min="0"/>% <input type="number" class="pxInput" id="MinAlarmPixels_px" min="0" step="1"/> px</td>
+									<td><input type="number" name="newZone[MaxAlarmPixels]" value="<?php echo $zone['MaxAlarmPixels'] ?>" step="any" max="100" min="0"/>% <input type="number" class="pxInput" id="MaxAlarmPixels_px" min="0" step="1"/> px</td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneMinMaxFiltArea') ?></th>
-									<td><input type="number" name="newZone[MinFilterPixels]" value="<?php echo $newZone['MinFilterPixels'] ?>"<?php echo $step ?> min="0"/></td>
-									<td><input type="number" name="newZone[MaxFilterPixels]" value="<?php echo $newZone['MaxFilterPixels'] ?>"<?php echo $step ?> min="0"/></td>
+									<td><input type="number" name="newZone[MinFilterPixels]" value="<?php echo $zone['MinFilterPixels'] ?>" step="any" max="100" min="0"/>% <input type="number" class="pxInput" id="MinFilterPixels_px" min="0" step="1"/> px</td>
+									<td><input type="number" name="newZone[MaxFilterPixels]" value="<?php echo $zone['MaxFilterPixels'] ?>" step="any" max="100" min="0"/>% <input type="number" class="pxInput" id="MaxFilterPixels_px" min="0" step="1"/> px</td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneMinMaxBlobArea') ?></th>
-									<td><input type="number" name="newZone[MinBlobPixels]" value="<?php echo $newZone['MinBlobPixels'] ?>"<?php echo $step ?> min="0"/></td>
-									<td><input type="number" name="newZone[MaxBlobPixels]" value="<?php echo $newZone['MaxBlobPixels'] ?>"<?php echo $step ?> min="0"/></td>
+									<td><input type="number" name="newZone[MinBlobPixels]" value="<?php echo $zone['MinBlobPixels'] ?>" step="any" max="100" min="0"/>% <input type="number" class="pxInput" id="MinBlobPixels_px" min="0" step="1"/> px</td>
+									<td><input type="number" name="newZone[MaxBlobPixels]" value="<?php echo $zone['MaxBlobPixels'] ?>" step="any" max="100" min="0"/>% <input type="number" class="pxInput" id="MaxBlobPixels_px" min="0" step="1"/> px</td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneMinMaxBlobs') ?></th>
-									<td><input type="number" name="newZone[MinBlobs]" value="<?php echo $newZone['MinBlobs'] ?>" min="0"/></td>
-									<td><input type="number" name="newZone[MaxBlobs]" value="<?php echo $newZone['MaxBlobs'] ?>" min="0"/></td>
+									<td><input type="number" name="newZone[MinBlobs]" value="<?php echo $zone['MinBlobs'] ?>" min="0"/></td>
+									<td><input type="number" name="newZone[MaxBlobs]" value="<?php echo $zone['MaxBlobs'] ?>" min="0"/></td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneOverloadFrames') ?></th>
-									<td colspan="2"><input type="number" name="newZone[OverloadFrames]" value="<?php echo $newZone['OverloadFrames'] ?>" min="0"/></td>
+									<td colspan="2"><input type="number" name="newZone[OverloadFrames]" value="<?php echo $zone['OverloadFrames'] ?>" min="0"/></td>
 								</tr>
 								<tr>
 									<th scope="row"><?php echo translate('ZoneExtendAlarmFrames') ?></th>
-									<td colspan="2"><input type="number" name="newZone[ExtendAlarmFrames]" value="<?php echo $newZone['ExtendAlarmFrames'] ?>" min="0"/></td>
+									<td colspan="2"><input type="number" name="newZone[ExtendAlarmFrames]" value="<?php echo $zone['ExtendAlarmFrames'] ?>" min="0"/></td>
 								</tr>
 							</tbody>
 						</table>
-					</div>
-
-					<div id="zonePoints">
-					  <table>
- 					 	  <tbody>
-					 		  <tr>
-<?php
-$pointCols = 2;
-for ( $i = 0; $i < $pointCols; $i++ ) {
-?>
+						<table id="rectangleSettings" style="display:none">
+							<caption><?php echo translate('RectangleMeasure') ?></caption>
+							<tbody>
+								<tr>
+									<th scope="row"><?php echo translate('RectangleObjectSize') ?></th>
 									<td>
-										<table>
-											<thead>
-												<tr>
-													<th><?php echo translate('Point') ?></th>
-													<th><?php echo translate('X') ?></th>
-													<th><?php echo translate('Y') ?></th>
-													<th><?php echo translate('Action') ?></th>
-												</tr>
-											</thead>
-											<tbody>
-											</tbody>
-										</table>
+										<input type="number" id="objectWidthPx" min="1" step="1" title="<?php echo translate('ObjectSizeWidth') ?>" aria-label="<?php echo translate('ObjectSizeWidth') ?>"/>&times;<input type="number" id="objectHeightPx" min="1" step="1" title="<?php echo translate('ObjectSizeHeight') ?>" aria-label="<?php echo translate('ObjectSizeHeight') ?>"/>px
+										<button type="button" id="objectSizeApplyBtn" class="btn btn-normal" title="<?php echo translate('ObjectSizeApply') ?>"><?php echo translate('ObjectSizeApplyLabel') ?></button>
+										<span class="ratioHint"><?php echo translate('RectangleOrTypeSize') ?></span>
 									</td>
-<?php
-# I think this for horizontal filler
-    if ( $i < ($pointCols-1) ) {
-?>
-									<td>&nbsp;</td>
-<?php
-    }
-} # end foreach pointcol
-?>
+								</tr>
+								<tr>
+									<th scope="row"><?php echo translate('RectangleAlarmedArea') ?></th>
+									<td>
+										<input type="number" id="objectFraction" value="<?php echo $rectangle_ratios['objectFraction']['value'] ?>" min="1" max="100" step="1"/>%
+										<span class="ratioHint"><?php echo translate('RectangleOfRectangle') ?></span>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row"><?php echo translate('RectangleFilteredArea') ?></th>
+									<td>
+										<input type="number" id="objectFilterRatio" value="<?php echo $rectangle_ratios['objectFilterRatio']['value'] ?>" min="1" max="100" step="1"/>%
+										<span class="ratioHint"><?php echo translate('RectangleOfAlarmed') ?></span>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row"><?php echo translate('RectangleBlobArea') ?></th>
+									<td>
+										<input type="number" id="objectBlobRatio" value="<?php echo $rectangle_ratios['objectBlobRatio']['value'] ?>" min="1" max="100" step="1"/>%
+										<span class="ratioHint"><?php echo translate('RectangleOfFiltered') ?></span>
+									</td>
 								</tr>
 							</tbody>
 						</table>
-					<div class="buttons">
-						<button type="button" id="pauseBtn"><?php echo translate('Pause') ?></button>
-						<button type="button" id="saveBtn" value="Save" <?php if (!canEdit('Monitors') || (false && $selfIntersecting)) { ?> disabled="disabled"<?php } ?>>
-						<?php echo translate('Save') ?>
-						</button>
-						<button type="button" id="cancelBtn" value="Cancel"><?php echo translate('Cancel') ?></button>
+            <div id="zonePoints">
+              <table>
+                <tbody>
+                  <tr>
+  <?php
+  $pointCols = 2;
+  for ( $i = 0; $i < $pointCols; $i++ ) {
+  ?>
+                    <td>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th class="pointIndex"><?php echo translate('Point') ?></th>
+                            <th class="pointX"><?php echo translate('X') ?></th>
+                            <th class="pointY"><?php echo translate('Y') ?></th>
+                            <th class="pointAction"><?php echo translate('Action') ?></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                        </tbody>
+                      </table>
+                    </td>
+  <?php
+  # I think this for horizontal filler
+      if ( $i < ($pointCols-1) ) {
+  ?>
+                    <td class="pointSpacer">&nbsp;</td>
+  <?php
+      }
+  } # end foreach pointcol
+  ?>
+                  </tr>
+                </tbody>
+              </table>
+            </div><!--end ZonePoints-->
 					</div>
-					</div><!--end ZonePoints-->
-        </div><!--definitionsPanel-->
       </form>
     </div><!--content-->
   </div><!--page-->
-</body>
-</html>
+<?php
+if ($monitor->JanusEnabled()) {
+?>
+  <script src="<?php echo cache_bust('js/adapter.min.js') ?>"></script>
+  <script src="/javascript/janus/janus.js"></script>
+<?php
+}
+if ($monitor->Go2RTCEnabled()) {
+  echo '<script type="module" src="js/video-stream.js"></script>'.PHP_EOL;
+}
+?>
+  <script src="<?php echo cache_bust('js/MonitorStream.js') ?>"></script>
+  <script src="<?php echo cache_bust('skins/classic/views/js/zone-object-size.js') ?>"></script>
+<?php xhtmlFooter() ?>

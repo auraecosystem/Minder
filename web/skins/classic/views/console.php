@@ -18,8 +18,8 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
 
-if ( $running == null ) 
-  $running = daemonCheck();
+$canEditMonitors = canEdit('Monitors');
+$canCreateMonitors = canCreate('Monitors');
 
 $eventCounts = array(
   'Total'=>  array(
@@ -37,7 +37,7 @@ $eventCounts = array(
     'filter' => array(
       'Query' => array(
         'terms' => array(
-          array( 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-1 hour' ),
+          array( 'cnj'=>'and', 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-1 hour' ),
         )
       )
     ),
@@ -49,7 +49,7 @@ $eventCounts = array(
     'filter' => array(
       'Query' => array(
         'terms' => array(
-          array( 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-1 day' ),
+          array( 'cnj'=>'and', 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-1 day' ),
         )
       )
     ),
@@ -61,7 +61,7 @@ $eventCounts = array(
     'filter' => array(
       'Query' => array(
         'terms' => array(
-          array( 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-7 day' ),
+          array( 'cnj'=>'and', 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-7 day' ),
         )
       )
     ),
@@ -73,7 +73,7 @@ $eventCounts = array(
     'filter' => array(
       'Query' => array(
         'terms' => array(
-          array( 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-1 month' ),
+          array( 'cnj'=>'and', 'attr' => 'StartDateTime', 'op' => '>=', 'val' => '-1 month' ),
         )
       )
     ),
@@ -85,7 +85,7 @@ $eventCounts = array(
     'filter' => array(
       'Query' => array(
         'terms' => array(
-          array( 'attr' => 'Archived', 'op' => '=', 'val' => '1' ),
+          array( 'cnj'=>'and', 'attr' => 'Archived', 'op' => '=', 'val' => '1' ),
         )
       )
     ),
@@ -94,23 +94,32 @@ $eventCounts = array(
   ),
 );
 
+require_once('includes/Group_Monitor.php');
 
 $navbar = getNavBarHTML();
-ob_start();
 include('_monitor_filters.php');
-$filterbar = ob_get_contents();
-ob_end_clean();
+$resultMonitorFilters = buildMonitorsFilters();
+$filterbar = $resultMonitorFilters['filterBar'];
+$displayMonitors = $resultMonitorFilters['displayMonitors'];
+$storage_areas = $resultMonitorFilters['storage_areas'];
+$StorageById = $resultMonitorFilters['StorageById'];
+$colAllAvailableMonitors = $resultMonitorFilters['selected_monitor_ids'];
+
+$displayMonitorIds = array_map(function($m){return $m['Id'];}, $displayMonitors);
 
 $show_storage_areas = (count($storage_areas) > 1) and (canEdit('System') ? 1 : 0);
-$maxWidth = 0;
-$maxHeight = 0;
 $zoneCount = 0;
-$total_capturing_bandwidth=0;
+$total_capturing_bandwidth = 0;
+$total_fps = 0;
+$total_analysis_fps = 0;
 
 $status_counts = array();
 for ( $i = 0; $i < count($displayMonitors); $i++ ) {
   $monitor = &$displayMonitors[$i];
-  if ( !$monitor['Status'] ) {
+  if ( $monitor['Deleted'] ) {
+    # Whatever Monitor_Status row a deleted monitor left behind is stale.
+    $monitor['Status'] = 'Deleted';
+  } else if ( !$monitor['Status'] ) {
     if ( $monitor['Type'] == 'WebSite' )
      $monitor['Status'] = 'Running';
     else
@@ -119,15 +128,6 @@ for ( $i = 0; $i < count($displayMonitors); $i++ ) {
   if ( !isset($status_counts[$monitor['Status']]) )
     $status_counts[$monitor['Status']] = 0;
   $status_counts[$monitor['Status']] += 1;
-
-  if ( $monitor['Function'] != 'None' ) {
-    $scaleWidth = reScale($monitor['Width'], $monitor['DefaultScale'], ZM_WEB_DEFAULT_SCALE);
-    $scaleHeight = reScale($monitor['Height'], $monitor['DefaultScale'], ZM_WEB_DEFAULT_SCALE);
-    if ( $maxWidth < $scaleWidth ) $maxWidth = $scaleWidth;
-    if ( $maxHeight < $scaleHeight ) $maxHeight = $scaleHeight;
-  }
-  #$monitor['zmc'] = zmcStatus( $monitor );
-  #$monitor['zma'] = zmaStatus( $monitor );
   $zoneCount += $monitor['ZoneCount'];
 
   $counts = array();
@@ -135,7 +135,7 @@ for ( $i = 0; $i < count($displayMonitors); $i++ ) {
     $filter = addFilterTerm(
       $eventCounts[$j]['filter'],
       count($eventCounts[$j]['filter']['Query']['terms']),
-      array('cnj'=>'and', 'attr'=>'MonitorId', 'op'=>'=', 'val'=>$monitor['Id'])
+      array('cnj'=>'and', 'attr'=>'Monitor', 'op'=>'=', 'val'=>$monitor['Id'])
     );
     parseFilter($filter);
     #$counts[] = 'count(if(1'.$filter['sql'].",1,NULL)) AS EventCount$j, SUM(if(1".$filter['sql'].",DiskSpace,NULL)) As DiskSpace$j";
@@ -145,27 +145,32 @@ for ( $i = 0; $i < count($displayMonitors); $i++ ) {
   }
   unset($monitor);
 } // end foreach display monitor
-$cycleWidth = $maxWidth;
-$cycleHeight = $maxHeight;
 
 noCacheHeaders();
 
 $eventsWindow = 'zm'.ucfirst(ZM_WEB_EVENTS_VIEW);
 $left_columns = 3;
-if ( count($servers) ) $left_columns += 1;
+if ( count($Servers) ) $left_columns += 1;
 if ( ZM_WEB_ID_ON_CONSOLE ) $left_columns += 1;
 if ( $show_storage_areas ) $left_columns += 1;
 
 xhtmlHeaders(__FILE__, translate('Console'));
 getBodyTopHTML();
-?>
-  <form name="monitorForm" method="get" action="?">
-    <input type="hidden" name="view" value="<?php echo $view ?>"/>
-    <input type="hidden" name="action" value=""/>
+echo $navbar ?>
+<div id="page">
+  <div id="content">
 
-    <?php echo $navbar ?>
-    <div class="filterBar"><?php echo $filterbar ?></div>
-    <div class="statusBreakdown">
+    <div id="fbpanel" class="filterBar<?php echo filterSettingsInline() ? '' : ' hidden-shift' ?>">
+      <form name="monitorFiltersForm" id="monitorFiltersForm" method="post" action="?view=<?php echo $view; ?>">
+      <?php echo $filterbar ?>
+      </form>
+    </div>
+
+    <div id="monitorsContainer">
+      <form name="monitorForm" id="monitorForm" method="post" action="?view=<?php echo $view; ?>">
+        <input type="hidden" name="action" value=""/>
+        <div id="toolbar" class="container-fluid pt-2 pb-2">
+          <div class="statusBreakdown">
 <?php
   $html = '';
   foreach ( array_keys($status_counts) as $status ) {
@@ -174,225 +179,142 @@ getBodyTopHTML();
   }
   echo $html;
 ?>
-    </div>
+      </div>
 
-    <div class="container-fluid">
-      <button type="button" name="addBtn" data-on-click-this="addMonitor"
-      <?php echo (canEdit('Monitors') && !$user['MonitorIds']) ? '' : ' disabled="disabled" title="'.translate('AddMonitorDisabled').'"' ?>
-      >
-        <i class="material-icons md-18">add_circle</i>
-        &nbsp;<?php echo translate('AddNewMonitor') ?>
-      </button>
-      <button type="button" name="cloneBtn" data-on-click-this="cloneMonitor"
-      <?php echo (canEdit('Monitors') && !$user['MonitorIds']) ? '' : ' disabled="disabled"' ?>
-      style="display:none;">
-        <i class="material-icons md-18">content_copy</i>
-<!--content_copy used instead of file_copy as there is a bug in material-icons -->
-        &nbsp;<?php echo translate('CloneMonitor') ?>
-      </button>
-      <button type="button" name="editBtn" data-on-click-this="editMonitor" disabled="disabled">
-        <i class="material-icons md-18">edit</i>
-        &nbsp;<?php echo translate('Edit') ?>
-      </button>
-      <button type="button" name="deleteBtn" data-on-click-this="deleteMonitor" disabled="disabled">
-        <i class="material-icons md-18">delete</i>
-        &nbsp;<?php echo translate('Delete') ?>
-      </button>
-      <button type="button" name="selectBtn" data-on-click-this="selectMonitor" disabled="disabled">
-        <i class="material-icons md-18">view_list</i>
-        &nbsp;<?php echo translate('Select') ?>
+      <div class="middleButtons">
+<?php
+  if ($canEditMonitors and (ZM_PATH_ARP or ZM_PATH_ARP_SCAN)) {
+?>
+        <button type="button" id="scanBtn" title="<?php echo translate('Network Scan') ?>" data-on-click="scanNetwork">
+        <i class="material-icons">wifi</i>
+        <span class="text"><?php echo translate('Scan Network') ?></span>
         </button>
 <?php
-ob_start();
+  }
 ?>
-      <table class="table table-striped table-hover table-condensed consoleTable">
+        <button type="button" name="addBtn" data-on-click="addMonitor"
+        <?php echo $canCreateMonitors ? 'title="'.translate('Add Monitor').'"' : ' disabled="disabled" title="'.translate('AddMonitorDisabled').'"' ?>
+        >
+          <i class="material-icons">add_circle</i>
+          <span class="text">&nbsp;<?php echo translate('AddNewMonitor') ?></span>
+        </button>
+        <button type="button" name="cloneBtn" data-on-click-this="cloneMonitor" disabled="disabled" title="<?php echo translate('Clone')?>">
+          <i class="material-icons">content_copy</i>
+  <!--content_copy used instead of file_copy as there is a bug in material-icons -->
+          <span class="text">&nbsp;<?php echo translate('CloneMonitor') ?></span>
+        </button>
+        <button type="button" name="editBtn" data-on-click-this="editMonitor" disabled="disabled" title="<?php echo translate('Edit')?>">
+          <i class="material-icons">edit</i>
+          <span class="text">&nbsp;<?php echo translate('Edit') ?></span>
+        </button>
+        <button type="button" name="deleteBtn" data-on-click-this="deleteMonitor" disabled="disabled" title="<?php echo translate('Delete')?>">
+          <i class="material-icons">delete</i>
+          <span class="text">&nbsp;<?php echo translate('Delete') ?></span>
+        </button>
+        <button type="button" name="selectBtn" data-on-click-this="selectMonitor" disabled="disabled" title="<?php echo translate('Select')?>">
+          <i class="material-icons">view_list</i>
+          <span class="text">&nbsp;<?php echo translate('Select') ?></span>
+        </button>
+      </div>
+      <div class="rightButtons">
+        <button type="button" id="sortBtn" data-on-click-this="sortMonitors" title="<?php echo translate('Sort')?>">
+        <i class="material-icons sort" title="Click and drag rows to change order">swap_vert</i>
+        <span class="text"><?php echo translate('Sort') ?></span>
+        </button>
+      </div>
+        
+<?php if (filterSettingsInline()) { ?>
+        &nbsp;<a href="#" data-flip-control-object="#fbpanel"><i id="fbflip" class="material-icons" data-icon-visible="filter_alt_off" data-icon-hidden="filter_alt"></i></a>
+<?php } ?>
+    
+    </div><!-- contentButtons -->
+    
+    <div id="monitorList" class="container-fluid table-responsive-sm">
+      <table
+        id="consoleTable"
+        data-locale="<?php echo i18n() ?>"
+        data-side-pagination="server"
+        data-ajax="ajaxRequest"
+        data-pagination="true"
+        data-page-size="<?php echo ZM_WEB_EVENTS_PER_PAGE ?>"
+        data-page-list="[10, 25, 50, 100, 200, All]"
+        data-search="true"
+        data-cookie="true"
+        data-cookie-same-site="Strict"
+        data-cookie-id-table="zmConsoleTable"
+        data-cookie-expire="2y"
+        data-remember-order="false"
+        data-show-columns="true"
+        data-show-export="false"
+        data-show-footer="true"
+        data-toolbar="#toolbar"
+        data-sort-name="Sequence"
+        data-sort-order="asc"
+        data-show-refresh="true"
+        data-click-to-select="true"
+        data-maintain-meta-data="true"
+        data-buttons-class="btn btn-normal"
+        data-show-advanced-search="false"
+        data-mobile-responsive="true"
+        class="table table-striped table-hover table-condensed consoleTable"
+        style="display:none;"
+      >
         <thead class="thead-highlight">
           <tr>
+<?php if ($canEditMonitors) { ?>
+            <th data-sortable="false" data-field="toggleCheck" data-checkbox="true"></th>
+<?php } ?>
 <?php if ( ZM_WEB_ID_ON_CONSOLE ) { ?>
-            <th class="colId"><?php echo translate('Id') ?></th>
+            <th data-sortable="true" data-field="Id" class="colId"><?php echo translate('Id') ?></th>
 <?php } ?>
-            <th class="colName"><i class="material-icons md-18">videocam</i>&nbsp;<?php echo translate('Name') ?></th>
-            <th class="colFunction"><?php echo translate('Function') ?></th>
-<?php if ( count($servers) ) { ?>
-            <th class="colServer"><?php echo translate('Server') ?></th>
+<?php if ( ZM_WEB_LIST_THUMBS ) { ?>
+            <th data-sortable="false" data-field="Thumbnail" class="colThumbnail"><?php echo translate('Thumbnail') ?></th>
 <?php } ?>
-            <th class="colSource"><i class="material-icons md-18">settings</i>&nbsp;<?php echo translate('Source') ?></th>
+            <th data-sortable="true" data-field="Name" class="colName"><?php echo translate('Name') ?></th>
+            <th data-sortable="true" data-visible="false" data-field="Manufacturer" class="colName"><?php echo translate('Manufacturer') ?></th>
+            <th data-sortable="true" data-visible="false" data-field="Model" class="colName"><?php echo translate('Model') ?></th>
+            <th data-sortable="true" data-field="Function" class="colFunction"><?php echo translate('Function') ?></th>
+<?php if ( count($Servers) ) { ?>
+            <th data-sortable="true" data-field="Server" class="colServer"><?php echo translate('Server') ?></th>
+<?php } ?>
+            <th data-sortable="true" data-field="Source" class="colSource"><?php echo translate('Source') ?></th>
 <?php if ( $show_storage_areas ) { ?>
-            <th class="colStorage"><?php echo translate('Storage') ?></th>
+            <th data-sortable="true" data-field="Storage" class="colStorage"><?php echo translate('Storage') ?></th>
 <?php }
-      foreach ( array_keys($eventCounts) as $j ) {
-        echo '<th class="colEvents">'. $eventCounts[$j]['title'] .'</th>';
-      }
+
+  foreach ( array_keys($eventCounts) as $i ) {
+      $filter = addFilterTerm(
+        $eventCounts[$i]['filter'],
+        count($eventCounts[$i]['filter']['Query']['terms']),
+        count($displayMonitorIds) != $colAllAvailableMonitors // Add monitors to the filter only if the filter limit is set
+          ? array(
+            'cnj'=>'and',
+            'attr'=>'Monitor',
+            'op'=>'IN',
+            'val'=>implode(',', $displayMonitorIds)
+            )
+          : array('cnj'=>'and', 'attr'=>'Monitor')
+      );
+    parseFilter($filter);
+    $eventsLink = canView('Events') ? '?view='.ZM_WEB_EVENTS_VIEW.'&amp;page=1'.$filter['querystring'] : '';
+    echo '<th data-sortable="true" data-field="'.$i.'Events" class="colEvents col'.$i.'Events"'
+      .'>'
+      .htmlspecialchars($eventCounts[$i]['title'])
+      .'</th>'.PHP_EOL;
+  } // end foreach eventCounts
 ?>
-            <th class="colZones"><?php echo translate('Zones') ?></th>
-<?php if ( canEdit('Monitors') ) { ?>
-            <th class="colMark"><input type="checkbox" name="toggleCheck" value="1" data-checkbox-name="markMids[]" data-on-click-this="updateFormCheckboxesByName"/></th>
-<?php } ?>
+            <th data-sortable="true" data-field="ZoneCount" class="colZones"><?php echo translate('Zones') ?></th>
+            <th data-sortable="true" data-visible="false" data-field="Sequence" class="Sequence"><?php echo translate('Sequence') ?></th>
           </tr>
         </thead>
         <tbody id="consoleTableBody">
-<?php
-$table_head = ob_get_contents();
-ob_end_clean();
-echo $table_head;
-for( $monitor_i = 0; $monitor_i < count($displayMonitors); $monitor_i += 1 ) {
-  $monitor = $displayMonitors[$monitor_i];
-  $Monitor = new ZM\Monitor($monitor);
-
-  if ( $monitor_i and ( $monitor_i % 100 == 0 ) ) {
-    echo '</table>';
-    echo $table_head;
-  } # monitor_i % 100
-?>
-          <tr id="<?php echo 'monitor_id-'.$monitor['Id'] ?>" title="<?php echo $monitor['Id'] ?>">
-<?php
-  if ( (!$monitor['Status'] || $monitor['Status'] == 'NotRunning') && $monitor['Type']!='WebSite' ) {
-    $source_class = 'errorText';
-  } else {
-    if ( $monitor['CaptureFPS'] == '0.00' ) {
-      $source_class = 'errorText';
-    } else if ( (!$monitor['AnalysisFPS']) && ($monitor['Function']!='Monitor') && ($monitor['Function'] != 'Nodect') ) {
-      $source_class = 'warnText';
-    } else {
-      $source_class = 'infoText';
-    }
-  }
-  if ( $monitor['Function'] == 'None' )
-    $function_class = 'errorText';
-  else
-    $function_class = 'infoText';
-
-
-  $scale = max(reScale(SCALE_BASE, $monitor['DefaultScale'], ZM_WEB_DEFAULT_SCALE), SCALE_BASE);
-  $stream_available = canView('Stream') and $monitor['Type']=='WebSite' or ($monitor['CaptureFPS'] && $monitor['Function'] != 'None');
-  $dot_class = $source_class;
-  if ( $function_class != 'infoText' ) {
-    $dot_class = $function_class;
-  } else if ( !$monitor['Enabled'] ) {
-    $dot_class .= ' warnText';
-  }
-
-  if ( ZM_WEB_ID_ON_CONSOLE ) {
-?>
-            <td class="colId"><a <?php echo ($stream_available ? 'href="?view=watch&amp;mid='.$monitor['Id'].'">' : '>') . $monitor['Id'] ?></a></td>
-<?php
-  }
-?>
-            <td class="colName">
-            <i class="material-icons md-18 <?php echo $dot_class ?>">lens</i>
-              <a <?php echo ($stream_available ? 'href="?view=watch&amp;mid='.$monitor['Id'].'">' : '>') . validHtmlStr($monitor['Name']) ?></a><br/>
-              <div class="small text-nowrap text-muted">
-
-              <?php echo implode('<br/>',
-                  array_map(function($group_id){
-                    $Group = ZM\Group::find_one(array('Id'=>$group_id));
-                    if ( $Group ) {
-                      $Groups = $Group->Parents();
-                      array_push( $Groups, $Group );
-                    }
-                    return implode(' &gt; ', array_map(function($Group){ return '<a href="?view=montagereview&amp;GroupId='.$Group->Id().'">'.validHtmlStr($Group->Name()).'</a>'; }, $Groups ));
-                    }, $Monitor->GroupIds() ) ); 
-?>
-            </div></td>
-            <td class="colFunction">
-              <?php echo makePopupLink( '?view=function&amp;mid='.$monitor['Id'], 'zmFunction', 'function', '<span class="'.$function_class.'">'.translate('Fn'.$monitor['Function']).( empty($monitor['Enabled']) ? ', <span class="disabledText">disabled</span>' : '' ) .'</span>', canEdit('Monitors') ) ?><br/>
-              <?php echo translate('Status'.$monitor['Status']) ?><br/>
-              <div class="small text-nowrap text-muted">
-<?php 
-  $fps_string = '';
-  if ( isset($monitor['CaptureFPS']) ) {
-    $fps_string .= $monitor['CaptureFPS'];
-  }
-
-  if ( isset($monitor['AnalysisFPS']) and ( $monitor['Function'] == 'Mocord' or $monitor['Function'] == 'Modect' ) ) {
-    $fps_string .= '/' . $monitor['AnalysisFPS'];
-  }
-  if ($fps_string) $fps_string .= ' fps';
-  $fps_string .= ' ' . human_filesize($monitor['CaptureBandwidth']).'/s';
-  $total_capturing_bandwidth += $monitor['CaptureBandwidth'];
-  echo $fps_string;
-?>
-              </div></td>
-<?php
-  if ( count($servers) ) { ?>
-            <td class="colServer"><?php $Server = isset($ServersById[$monitor['ServerId']]) ? $ServersById[$monitor['ServerId']] : new ZM\Server($monitor['ServerId']); echo validHtmlStr($Server->Name()); ?></td>
-<?php
-  }
-  echo '<td class="colSource">'. makePopupLink( '?view=monitor&amp;mid='.$monitor['Id'], 'zmMonitor'.$monitor['Id'], 'monitor', '<span class="'.$source_class.'">'.validHtmlStr($Monitor->Source()).'</span>', canEdit('Monitors') ).'</td>';
-  if ( $show_storage_areas ) {
-?>
-            <td class="colStorage"><?php if ( isset($StorageById[$monitor['StorageId']]) ) { echo validHtmlStr($StorageById[$monitor['StorageId']]->Name()); } ?></td>
-<?php
-  }
-
-      foreach ( array_keys($eventCounts) as $i ) {
-?>
-            <td class="colEvents"><a <?php echo (canView('Events') ? 'href="?view='.ZM_WEB_EVENTS_VIEW.'&amp;page=1'.$monitor['eventCounts'][$i]['filter']['query'].'">'  : '') . 
-                $monitor[$i.'Events'] . '<br/></a><div class="small text-nowrap text-muted">' . human_filesize($monitor[$i.'EventDiskSpace']) ?></div></td>
-<?php
-  }
-?>
-            <td class="colZones"><?php echo makePopupLink('?view=zones&amp;mid='.$monitor['Id'], 'zmZones', array('zones', $monitor['Width'], $monitor['Height']), $monitor['ZoneCount'], canView('Monitors')) ?></td>
-<?php
-  if ( canEdit('Monitors') ) {
-?>
-            <td class="colMark">
-              <input type="checkbox" name="markMids[]" value="<?php echo $monitor['Id'] ?>" data-on-click-this="setButtonStates"<?php if ( !canEdit( 'Monitors' ) ) { ?> disabled="disabled"<?php } ?>/>
-<i class="material-icons sort" title="Click and drag to change order">swap_vert</i>
-            </td>
-<?php
-  }
-?>
-          </tr>
-<?php
-} # end for each monitor
-?>
         </tbody>
-        <tfoot>
-          <tr>
-<?php if ( ZM_WEB_ID_ON_CONSOLE ) { ?>
-            <td class="colId"><?php echo translate('Total').":".count($displayMonitors) ?></td>
-<?php } ?>
-            <td class="colName"></td>
-            <td class="colFunction"><?php echo human_filesize($total_capturing_bandwidth ).'/s' ?></td>
-<?php if ( count($servers) ) { ?>
-            <td class="colServer"></td>
-<?php } ?>
-            <td class="colSource"></td>
-<?php if ( $show_storage_areas ) { ?>
-            <td class="colStorage"></td>
-<?php
-}
-  foreach ( array_keys($eventCounts) as $i ) {
-    $filter = addFilterTerm(
-      $eventCounts[$i]['filter'],
-      count($eventCounts[$i]['filter']['Query']['terms']),
-      array(
-        'cnj'=>'and',
-        'attr'=>'MonitorId',
-        'op'=>'IN',
-        'val'=>implode(',',array_map(function($m){return $m['Id'];}, $displayMonitors))
-        )
-    );
-    parseFilter($filter);
-?>
-            <td class="colEvents">
-              <a <?php echo
-              (canView('Events') ? 'href="?view='.ZM_WEB_EVENTS_VIEW.'&amp;page=1'.$filter['query'].'">' : '') . 
-              $eventCounts[$i]['totalevents'].'</a><br/>
-              <div class="small text-nowrap text-muted">'.human_filesize($eventCounts[$i]['totaldiskspace'])
-            ?></div>
-            </td>
-<?php
-      } // end foreach eventCounts
-?>
-            <td class="colZones"><?php echo $zoneCount ?></td>
-<?php if ( canEdit('Monitors') ) { ?>
-            <td class="colMark"></td>
-<?php } ?>
-          </tr>
-        </tfoot>
       </table>
-    </div>
+    </div><!-- content table responsive div -->
   </form>
-<?php xhtmlFooter() ?>
+</div>
+</div><!--content-->
+</div><!--page-->
+<?php
+  xhtmlFooter();
+?>

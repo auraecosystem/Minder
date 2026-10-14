@@ -1,35 +1,109 @@
 <?php
+require_once(__DIR__.'/Network.php');
+
+// Record the client address for this request, keeping the previous one when it
+// changes so an auth hash issued against it can still be validated. How long
+// that stays acceptable is auth's decision; see authHashCandidateAddrs() in
+// auth.php.
+function zm_session_set_remote_addr() {
+  $addr = getRemoteAddr();
+  if (isset($_SESSION['remoteAddr']) and ($_SESSION['remoteAddr'] !== '') and ($_SESSION['remoteAddr'] !== $addr)) {
+    // Only ever keep one previous address. Drop the cached hash belonging to
+    // the one being displaced so a client whose address changes repeatedly
+    // cannot accumulate AuthHash slots in the session.
+    if (isset($_SESSION['prevRemoteAddr']) and ($_SESSION['prevRemoteAddr'] !== $addr)) {
+      unset($_SESSION['AuthHash'.$_SESSION['prevRemoteAddr']]);
+    }
+    $_SESSION['prevRemoteAddr'] = $_SESSION['remoteAddr'];
+    $_SESSION['prevRemoteAddrAt'] = time();
+  }
+  $_SESSION['remoteAddr'] = $addr;
+}
+
+// Wrapper around setcookie that auto-sets samesite, and deals with older versions of php
+function zm_setcookie($cookie, $value, $options=array()) {
+  if (!isset($options['path'])) {
+    $options['path'] = '/';
+  }
+  if (!isset($options['expires'])) {
+    $options['expires'] = time()+3600*24*30*12*10; // 10 years?!
+  }
+  if (!isset($options['samesite'])) {
+    $options['samesite'] = 'Strict';
+  }
+
+  if (version_compare(phpversion(), '7.3.0', '>=')) {
+    setcookie($cookie, $value, $options);
+  } else {
+    setcookie($cookie, $value, $options['expires'], '/; samesite=strict');
+  }
+  //ZM\Debug("Setting cookie for $cookie to $value");
+}
+
+// A session is only worth storing if the client actually carries it. A request
+// that arrives without our cookie - a bot, an image tag or a cross-origin ajax
+// poll authenticated by auth hash or token - still gets a session for the life
+// of the request, but writing it out leaves a Sessions row that nothing will
+// ever load again. Viewing an event polls the event's server every
+// ZM_WEB_REFRESH_STATUS seconds, so a cross-origin poll used to add a row every
+// few seconds. Login is the exception: that is where a session is first issued.
+$zm_session_persist = false;
+
+// Store this session even though the client arrived without our cookie.
+function zm_session_persist() {
+  global $zm_session_persist;
+  $zm_session_persist = true;
+}
+
+function zm_session_is_persistable() {
+  global $zm_session_persist;
+  return $zm_session_persist || !empty($_COOKIE[session_name()]);
+}
+
 // ZM session start function support timestamp management
 function zm_session_start() {
-  // Make sure use_strict_mode is enabled.
-  // use_strict_mode is mandatory for security reasons.
-  ini_set('session.use_strict_mode', 1);
+  if (ini_get('session.name') != 'ZMSESSID') {
+    // Make sure use_strict_mode is enabled.
+    // use_strict_mode is mandatory for security reasons.
+    ini_set('session.use_strict_mode', 1);
 
-  $currentCookieParams = session_get_cookie_params(); 
-  $currentCookieParams['lifetime'] = ZM_COOKIE_LIFETIME;
+    $currentCookieParams = session_get_cookie_params();
+    if (defined('ZM_OPT_USE_REMEMBER_ME') && ZM_OPT_USE_REMEMBER_ME != 'None' && ZM_OPT_USE_REMEMBER_ME != '' && ZM_OPT_USE_REMEMBER_ME != '0' && empty($_COOKIE['ZM_REMEMBER_ME'])) {
+      $currentCookieParams['lifetime'] = 0;
+    } else {
+      $currentCookieParams['lifetime'] = ZM_COOKIE_LIFETIME;
+    }
+    $currentCookieParams['httponly'] = true;
+    if ( version_compare(phpversion(), '7.3.0', '<') ) {
+      session_set_cookie_params(
+        $currentCookieParams['lifetime'],
+        $currentCookieParams['path'].'; samesite=strict',
+        $currentCookieParams['domain'],
+        $currentCookieParams['secure'],
+        $currentCookieParams['httponly']
+      );
+    } else {
+      # samesite was introduced in 7.3.0
+      $currentCookieParams['samesite'] = 'Strict';
+      session_set_cookie_params($currentCookieParams);
+    }
 
-  session_set_cookie_params( 
-    $currentCookieParams['lifetime'],
-    $currentCookieParams['path'],
-    $currentCookieParams['domain'],
-    $currentCookieParams['secure'],
-    true
-  );
-
-  ini_set('session.name', 'ZMSESSID');
-  ZM\Logger::Debug('Setting cookie parameters to lifetime('.$currentCookieParams['lifetime'].') path('.$currentCookieParams['path'].') domain ('.$currentCookieParams['domain'].') secure('.$currentCookieParams['secure'].') httpOnly(1) name:'.session_name());
-
+    ini_set('session.name', 'ZMSESSID');
+    //ZM\Debug('Setting cookie parameters to '.print_r($currentCookieParams, true));
+  }
   session_start();
-  $_SESSION['remoteAddr'] = $_SERVER['REMOTE_ADDR']; // To help prevent session hijacking
+  // To help prevent session hijacking, remember the client address. See
+  // Network.php / getRemoteAddr() for the X-Forwarded-For handling.
+  zm_session_set_remote_addr();
   $now = time();
   // Do not allow to use expired session ID
   if ( !empty($_SESSION['last_time']) && ($_SESSION['last_time'] < ($now - 180)) ) {
-    ZM\Info('Destroying session due to timeout. ');
+    //ZM\Info('Destroying session due to timeout.');
     session_destroy();
     session_start();
   } else if ( !empty($_SESSION['generated_at']) ) {
     if ( $_SESSION['generated_at']<($now-(ZM_COOKIE_LIFETIME/2)) ) {
-      ZM\Logger::Debug("Regenerating session because generated_at " . $_SESSION['generated_at'] . ' < ' . $now . '-'.ZM_COOKIE_LIFETIME.'/2 = '.($now-ZM_COOKIE_LIFETIME/2));
+      ZM\Debug('Regenerating session because generated_at ' . $_SESSION['generated_at'] . ' < ' . $now . '-'.ZM_COOKIE_LIFETIME.'/2 = '.($now-ZM_COOKIE_LIFETIME/2));
       zm_session_regenerate_id();
     }
   }
@@ -38,20 +112,43 @@ function zm_session_start() {
 // session regenerate id function
 // Assumes that zm_session_start has been called previously
 function zm_session_regenerate_id() {
-  if ( session_status() != PHP_SESSION_ACTIVE ) {
-    session_start();
-  }
+  if (!is_session_started()) session_start();
 
   // Set deleted timestamp. Session data must not be deleted immediately for reasons.
   $_SESSION['last_time'] = time();
-  // Finish session
   session_write_close();
 
   session_start();
+  
+  //ZM\Debug("Regenerating session. Old id was " . session_id());
   session_regenerate_id();
+  //ZM\Debug("Regenerating session. New id was " . session_id());
   unset($_SESSION['last_time']);
   $_SESSION['generated_at'] = time();
+  zm_session_set_remote_addr();
 } // function zm_session_regenerate_id()
+
+// Regenerate the session id at a privilege boundary (login).
+// When called with an already-started session (the normal login flow), this
+// should emit a single Set-Cookie via session_regenerate_id(true) while
+// discarding any pre-auth session data and deleting the old session server-side.
+// Assumes zm_session_start() has been called previously.
+function zm_session_regenerate_id_login() {
+  if (!is_session_started()) zm_session_start();
+  // The client has no cookie yet on a first login, but this session must be stored.
+  zm_session_persist();
+  // Discard any pre-auth session contents so nothing carries across the
+  // authentication boundary.
+  $_SESSION = array();
+  // New id + delete the old session file server-side. Emits a single Set-Cookie.
+  session_regenerate_id(true);
+  $_SESSION['generated_at'] = time();
+  // Bind a fresh login to the address it came from only. Any address carried
+  // over from before the privilege boundary must not stay acceptable.
+  unset($_SESSION['prevRemoteAddr']);
+  unset($_SESSION['prevRemoteAddrAt']);
+  $_SESSION['remoteAddr'] = getRemoteAddr();
+} // function zm_session_regenerate_id_login()
 
 function is_session_started() {
   if ( php_sapi_name() !== 'cli' ) {
@@ -67,16 +164,98 @@ function is_session_started() {
 } // function is_session_started()
 
 function zm_session_clear() {
-  session_start();
+  if (!is_session_started()) session_start();
   $_SESSION = array();
   if ( ini_get('session.use_cookies') ) {
     $p = session_get_cookie_params();
     # Update the cookie to expire in the past.
-    setcookie(session_name(), '', time() - 31536000, $p['path'], $p['domain'], $p['secure'], $p['httponly']);
+    $p['expires'] = time() - 31536000;
+    unset($p['lifetime']); // Not valid for a cookie
+    zm_setcookie(session_name(), '', $p);
   }
   session_unset();
   session_destroy();
   session_write_close();
-  session_start();
 } // function zm_session_clear()
+
+// The connection is fetched per call rather than held as a member. This handler
+// is constructed while session.php is being included, before anything has
+// needed the database, so there is nothing to capture at that point - which is
+// what the old `$this->db = $dbConn` constructor got wrong. zmDbConnOrNull()
+// returns null when the database is unreachable and the methods below degrade
+// to "no session" rather than ending the request.
+class ZMSessionHandler implements SessionHandlerInterface {
+  public function open($path, $name): bool {
+    return zmDbConnOrNull() ? true : false;
+  }
+  public function close() : bool {
+    // The example code closed the db connection.. I don't think we care to.
+    return true;
+  }
+  #[\ReturnTypeWillChange]
+  public function read($id){
+    if (!($db = zmDbConnOrNull())) return '';
+    $sth = $db->prepare('SELECT data FROM Sessions WHERE id = :id');
+    if (!$sth->bindParam(':id', $id, PDO::PARAM_STR, 32)) {
+      ZM\Error("Failed to bind param");
+      if (!$sth->bindParam(':id', $id, PDO::PARAM_STR)) {
+        ZM\Error("Failed to bind param");
+      }
+    }
+
+    if ( $sth->execute() ) {
+      if (( $row = $sth->fetch(PDO::FETCH_ASSOC) ) ) {
+        return $row['data'];
+      } 
+    }
+    // Return an empty string
+    return '';
+  }
+  public function write($id, $data) : bool {
+    if (!zm_session_is_persistable()) return true;
+    if (!($db = zmDbConnOrNull())) return false;
+    // Create time stamp
+    $access = time();
+
+    $sth = $db->prepare('REPLACE INTO Sessions VALUES (:id, :access, :data)');
+
+    $sth->bindParam(':id', $id, PDO::PARAM_STR, 32);
+    $sth->bindParam(':access', $access, PDO::PARAM_INT);
+    $sth->bindParam(':data', $data);
+
+    return $sth->execute() ? true : false;
+  }
+  public function destroy($id) : bool {
+    if (!($db = zmDbConnOrNull())) return false;
+    $sth = $db->prepare('DELETE FROM Sessions WHERE Id = :id');
+    $sth->bindParam(':id', $id, PDO::PARAM_STR, 32);
+    return $sth->execute() ? true : false;
+  }
+  #[\ReturnTypeWillChange]
+  public function gc($max) {
+    if (!($db = zmDbConnOrNull())) return false;
+    // Calculate what is to be deemed old
+    $now = time();
+    $old = $now - $max;
+    ZM\Debug('doing session gc ' . $now . '-' . $max. '='.$old);
+
+    // Two-phase delete: find expired ids via the access index (consistent read, no locks),
+    // then delete by primary key so InnoDB only takes record locks on the matched rows
+    // and not gap locks across the access range — avoids deadlocks with concurrent
+    // REPLACE INTO Sessions on every authenticated request.
+    $sel = $db->prepare('SELECT id FROM Sessions WHERE access < :old LIMIT 100');
+    $sel->bindParam(':old', $old, PDO::PARAM_INT);
+    if (!$sel->execute()) return false;
+    $ids = $sel->fetchAll(PDO::FETCH_COLUMN);
+    if (!$ids) return true;
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $del = $db->prepare("DELETE FROM Sessions WHERE id IN ($placeholders)");
+    return $del->execute($ids) ? true : false;
+  }
+  public function validateId($key) : bool {return true;}
+} # end class Session
+
+$session = new ZMSessionHandler;
+session_set_save_handler($session, true);
 ?>

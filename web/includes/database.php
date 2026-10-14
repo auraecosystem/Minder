@@ -30,22 +30,23 @@ require_once('logger.php');
 function dbConnect() {
   global $dbConn;
 
-  $socket = '';
+  $dsn = ZM_DB_TYPE;
   if ( ZM_DB_HOST ) {
     if ( strpos(ZM_DB_HOST, ':') ) {
       // Host variable may carry a port or socket.
       list($host, $portOrSocket) = explode(':', ZM_DB_HOST, 2);
       if ( ctype_digit($portOrSocket) ) {
-        $socket = ':host='.$host . ';port='.$portOrSocket.';';
+        $dsn .= ':host='.$host.';port='.$portOrSocket.';';
       } else {
-        $socket = ':unix_socket='.$portOrSocket.';';
+        $dsn .= ':unix_socket='.$portOrSocket.';';
       }
     } else {
-      $socket = ':host='.ZM_DB_HOST.';';
+      $dsn .= ':host='.ZM_DB_HOST.';';
     }
   } else {
-    $socket = ':host=localhost;';
+    $dsn .= ':host=localhost;';
   }
+  $dsn .= 'dbname='.ZM_DB_NAME.';charset=utf8mb4';
 
   try {
     $dbOptions = null;
@@ -55,28 +56,74 @@ function dbConnect() {
         PDO::MYSQL_ATTR_SSL_KEY  => ZM_DB_SSL_CLIENT_KEY,
         PDO::MYSQL_ATTR_SSL_CERT => ZM_DB_SSL_CLIENT_CERT,
       );
-      $dbConn = new PDO(ZM_DB_TYPE.$socket.'dbname='.ZM_DB_NAME, ZM_DB_USER, ZM_DB_PASS, $dbOptions);
+      // Identity-verify the server certificate when ZM_DB_SSL_VERIFY_SERVER_CERT
+      // is set: truthy verifies, false-y (0/false/no/off) allows a self-signed
+      // or non-matching cert. An empty/unset value leaves PDO's default in place
+      // so existing installs are not changed on upgrade. Guarded with defined()
+      // so an upgraded zm.conf that predates this option does not fatal on PHP 8.
+      // Refs #3816.
+      if ( defined('ZM_DB_SSL_VERIFY_SERVER_CERT') ) {
+        $verify_value = strtolower(trim((string)ZM_DB_SSL_VERIFY_SERVER_CERT));
+        if ( $verify_value !== '' ) {
+          $dbOptions[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] =
+            !in_array($verify_value, array('0', 'false', 'no', 'off'), true);
+        }
+      }
+      $dbConn = new PDO($dsn, ZM_DB_USER, ZM_DB_PASS, $dbOptions);
     } else {
-      $dbConn = new PDO(ZM_DB_TYPE.$socket.'dbname='.ZM_DB_NAME, ZM_DB_USER, ZM_DB_PASS);
+      $dbConn = new PDO($dsn, ZM_DB_USER, ZM_DB_PASS);
     }
 
     $dbConn->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
     $dbConn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
   } catch(PDOException $ex) {
-    echo 'Unable to connect to ZM db.' . $ex->getMessage();
+    global $error_message;
+    $error_message = "Unable to connect to ZM db using dsn $dsn<br/><br/>".$ex->getMessage();
     error_log('Unable to connect to ZM DB ' . $ex->getMessage());
     $dbConn = null;
   }
   return $dbConn;
 }  // end function dbConnect
 
-if ( !dbConnect() ) {
-  ZM\Fatal("Failed db connection to $socket");
+// $dbConn is tri-state: false means no connection has been attempted, null means
+// an attempt was made and failed, and a PDO means we are connected.
+//
+// Connecting happens on first use rather than when this file is included. Every
+// model in web/includes requires database.php, so connecting at include time
+// meant that merely loading a class opened a socket - and, on failure, rendered
+// an error page and killed the request from inside a library include. Deferring
+// it means code that only needs the functions here never touches the database.
+
+// Return the connection, opening it if needed. A request that cannot reach the
+// database cannot be served, so this renders the error view and stops, which is
+// what including this file used to do - just at the point a query is actually
+// attempted.
+function zmDbConn() {
+  global $dbConn;
+  if ($dbConn === false) dbConnect();
+  if (!$dbConn) {
+    // Absolute path: the previous relative include only resolved when the cwd
+    // was web/, so it failed for anything served out of web/api/.
+    include(__DIR__.'/../views/no_database_connection.php');
+    exit();
+  }
+  return $dbConn;
+}
+
+// As above, but returns null instead of ending the request. For callers that
+// have something useful to do without a database - the logger falls back to
+// error_log() - and must not turn a logging call into a fatal error.
+function zmDbConnOrNull() {
+  global $dbConn;
+  if ($dbConn === false) dbConnect();
+  return $dbConn ? $dbConn : null;
 }
 
 function dbDisconnect() {
   global $dbConn;
-  $dbConn = null;
+  // false, not null: this is "no longer connected", not "connecting failed", so
+  // a later query is free to open a new connection.
+  $dbConn = false;
 }
 
 function dbLogOff() {
@@ -102,23 +149,24 @@ function dbLog($sql, $update=false) {
   global $dbLogLevel;
   $noExecute = $update && ($dbLogLevel >= DB_LOG_DEBUG);
   if ( $dbLogLevel > DB_LOG_OFF )
-    ZM\Logger::Debug( "SQL-LOG: $sql".($noExecute?' (not executed)':'') );
+    ZM\Debug( "SQL-LOG: $sql".($noExecute?' (not executed)':'') );
   return( $noExecute );
 }
 
 function dbError($sql) {
-  global $dbConn;
+  $dbConn = zmDbConnOrNull();
+  if (!$dbConn) return '';
   $error = $dbConn->errorInfo();
-  if ( ! $error[0] )
+  if (!$error[0])
     return '';
 
-  $message = "SQL-ERR '".implode("\n",$dbConn->errorInfo())."', statement was '".$sql."'";
+  $message = "SQL-ERR '".implode("\n", $dbConn->errorInfo())."', statement was '".$sql."'";
   ZM\Error($message);
   return $message;
 }
 
 function dbEscape( $string ) {
-  global $dbConn;
+  $dbConn = zmDbConn();
   if ( version_compare(phpversion(), '5.4', '<=') and get_magic_quotes_gpc() ) 
     return $dbConn->quote(stripslashes($string));
   else
@@ -126,42 +174,51 @@ function dbEscape( $string ) {
 }
 
 function dbQuery($sql, $params=NULL, $debug = false) {
-  global $dbConn;
-  if ( dbLog($sql, true) )
+  $dbConn = zmDbConn();
+  if (dbLog($sql, true))
     return;
   $result = NULL;
   try {
-    if ( isset($params) ) {
-      if ( ! $result = $dbConn->prepare($sql) ) {
+    if (isset($params)) {
+      if (!$result = $dbConn->prepare($sql)) {
         ZM\Error("SQL: Error preparing $sql: " . $pdo->errorInfo);
+        // Set after logging: a DB log target would call dbQuery and clobber this.
+        $GLOBALS['dbLastError'] = implode(' ', $dbConn->errorInfo());
         return NULL;
       }
 
-      if ( ! $result->execute($params) ) {
+      if (!$result->execute($params)) {
         ZM\Error("SQL: Error executing $sql: " . print_r($result->errorInfo(), true));
+        $GLOBALS['dbLastError'] = implode(' ', $result->errorInfo());
         return NULL;
       }
     } else {
       if ( defined('ZM_DB_DEBUG') or $debug ) {
-				ZM\Logger::Debug("SQL: $sql values:" . ($params?implode(',',$params):''));
+				ZM\Debug("SQL: $sql values:" . ($params?implode(',',$params):''));
       }
       $result = $dbConn->query($sql);
       if ( ! $result ) {
         ZM\Error("SQL: Error preparing $sql: " . $pdo->errorInfo);
+        $GLOBALS['dbLastError'] = implode(' ', $dbConn->errorInfo());
         return NULL;
       }
     }
     if ( defined('ZM_DB_DEBUG') or $debug ) {
-      if ( $params )
-        ZM\Logger::Debug("SQL: $sql " . implode(',',$params) . ' rows: '.$result->rowCount());
-      else
-        ZM\Logger::Debug("SQL: $sql: rows:" . $result->rowCount());
+      ZM\Debug('SQL: '.$sql.' '.($params?implode(',',$params):'').' rows: '.$result->rowCount());
     }
   } catch(PDOException $e) {
     ZM\Error("SQL-ERR '".$e->getMessage()."', statement was '".$sql."' params:" . ($params?implode(',',$params):''));
+    $GLOBALS['dbLastError'] = $e->getMessage();
     return NULL;
   }
+  $GLOBALS['dbLastError'] = null;
   return $result;
+}
+
+// Human-readable text of the most recent dbQuery() failure, or '' if the last
+// query succeeded. Only meaningful immediately after dbQuery() returns NULL.
+function dbLastError() {
+  return isset($GLOBALS['dbLastError']) ? $GLOBALS['dbLastError'] : '';
 }
 
 function dbFetchOne($sql, $col=false, $params=NULL) {
@@ -224,13 +281,13 @@ function dbFetchNext($result, $col=false) {
   return false;
 }
 
-function dbNumRows( $sql ) {
-  $result = dbQuery($sql);
+function dbNumRows($sql, $params=NULL) {
+  $result = dbQuery($sql, $params);
   return $result->rowCount();
 }
 
 function dbInsertId() {
-  global $dbConn;
+  $dbConn = zmDbConn();
   return $dbConn->lastInsertId();
 }
 
@@ -378,5 +435,56 @@ function getTableDescription( $table, $asString=1 ) {
       $columns[] = $desc;
   }
   return $columns;
+}
+
+function db_version() {
+  return dbFetchOne('SELECT VERSION()', 'VERSION()');
+}
+
+function db_supports_feature($feature) {
+  $version = db_version();
+  if ($feature == 'skip_locks') {
+    $just_the_version = strstr($version, '-MariaDB', true);
+    if (false === $just_the_version) {
+      # Is MYSQL
+      return version_compare($version, '8.0.1', '>=');
+    } else {
+      return version_compare($just_the_version, '10.6', '>=');
+    }
+  } else {
+    ZM\Warning("Unknown feature requested $feature");
+  }
+}
+
+function dbInsert($table, $fieldArray) {
+  $query = 'INSERT INTO `' . $table . '` SET ';
+  $fields = [];
+  $conditions = [];
+  $values = [];
+  foreach ($fieldArray as $fieldName => $fieldValue) {
+    $fields[] = '`' . $fieldName.'`=?';
+    $values[] = $fieldValue;
+  }
+  $query .= implode(', ', $fields);
+  return dbQuery($query, $values);
+}
+
+function dbUpdate($table, $fieldArray, $conditionArray) {
+  $query = 'UPDATE `' . $table . '` SET ';
+  $fields = [];
+  $conditions = [];
+  $values = [];
+  foreach ($fieldArray as $fieldName => $fieldValue) {
+    $fields[] = '`' . $fieldName.'`=?';
+    $values[] = $fieldValue;
+  }
+  $query .= implode(', ', $fields);
+  $query .= ' WHERE ';
+  foreach ($conditionArray as $fieldName => $fieldValue) {
+    $conditions[] = '`' . $fieldName . '` = ?';
+    $values[] = $fieldValue;
+  }
+  $query .= implode(' AND ', $conditions);
+  return dbQuery($query, $values);
 }
 ?>

@@ -1,10 +1,9 @@
 ZoneMinder
 ==========
 
-[![Build Status](https://travis-ci.org/ZoneMinder/zoneminder.png)](https://travis-ci.org/ZoneMinder/zoneminder)
-[![Bounty Source](https://api.bountysource.com/badge/team?team_id=204&style=bounties_received)](https://www.bountysource.com/teams/zoneminder/issues?utm_source=ZoneMinder&utm_medium=shield&utm_campaign=bounties_received)
-[![Join Slack](https://github.com/ozonesecurity/ozonebase/blob/master/img/slacksm.png?raw=true)](https://join.slack.com/t/zoneminder-chat/shared_invite/enQtNTU0NDkxMDM5NDQwLTdhZmQ5Y2M2NWQyN2JkYTBiN2ZkMzIzZGQ0MDliMTRmM2FjZWRlYzUwYTQ2MjMwMTVjMzQ1NjYxOTdmMjE2MTE)
-[![IRC Network](https://img.shields.io/badge/irc-%23zoneminder-blue.svg "IRC Freenode")](https://webchat.freenode.net/?channels=zoneminder)
+[![Join Slack](https://github.com/ozonesecurity/ozonebase/blob/master/img/slacksm.png?raw=true)](https://join.slack.com/t/zoneminder-chat/shared_invite/enQtNTU0NDkxMDM5NDQwLTdhZmQ5Y2M2NWQyN2JkYTBiN2ZkMzIzZGQ0MDliMTRmM2FjZWRlYzUwYTQ2MjMwMTVjMzQ1NjYxOTdmMjE2MTE "Join Slack")
+<a href="https://discord.gg/tHYyP9k66q" title="Join Discord Server"><img src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/636e0a6a49cf127bf92de1e2_icon_clyde_blurple_RGB.png" alt="drawing" width="50"/></a>
+
 
 All documentation for ZoneMinder is now online at https://zoneminder.readthedocs.org
 
@@ -26,14 +25,14 @@ https://github.com/ZoneMinder/zmdockerfiles
 
 This is the recommended method to install ZoneMinder onto your system. ZoneMinder packages are maintained for the following distros:
 
-- Ubuntu via [Iconnor's PPA](https://launchpad.net/~iconnor)
+- Ubuntu via [Isaac Connor's PPA](https://launchpad.net/~iconnor)
 - Debian from their [default repository](https://packages.debian.org/search?searchon=names&keywords=zoneminder) 
 - RHEL/CentOS and clones via [RPM Fusion](http://rpmfusion.org)
 - Fedora via [RPM Fusion](http://rpmfusion.org)
-- OpenSuse via [third party repository](http://www.zoneminder.com/wiki/index.php/Installing_using_ZoneMinder_RPMs_for_SuSE)
+- OpenSuse via [third party repository](https://wiki.zoneminder.com/Installing_using_ZoneMinder_RPMs_for_SuSE)
 - Mageia from their default repository
 - Arch via the [AUR](https://aur.archlinux.org/packages/zoneminder/)
-- Gentoo from their [default repository](https://packages.gentoo.org/packages/www-misc/zoneminder)
+- Gentoo via [Portage Overlays](http://gpo.zugaina.org/www-misc/zoneminder)
 
 If a repository that hosts ZoneMinder packages is not available for your distro, then you are encouraged to build your own package, rather than build from source.  While each distro is different in ways that set it apart from all the others, they are often similar enough to allow you to adapt another distro's package building instructions to your own.
 
@@ -57,7 +56,7 @@ Please visit our [ReadtheDocs site](https://zoneminder.readthedocs.org/en/stable
 ### Package Maintainers
 Many of the ZoneMinder configuration variable default values are not configurable at build time through autotools or cmake.  A new tool called *zmeditconfigdata.sh* has been added to allow package maintainers to manipulate any variable stored in ConfigData.pm without patching the source. 
 
-For example, let's say I have created a new ZoneMinder package that contains the cambozola javascript file.  However, by default cambozola support is turned off.  To fix that, add this to the packaging script:
+For example, let's say I have created a new ZoneMinder package that contains the cambozola javascript file.  However by default cambozola support is turned off.  To fix that, add this to the packaging script:
 ```bash
 ./utils/zmeditconfigdata.sh ZM_OPT_CAMBOZOLA yes
 ```
@@ -70,18 +69,19 @@ Docker is a system to run applications inside isolated containers. ZoneMinder, a
 Dockerfile contained in this repository. However, there is still work needed to ensure that the main ZM features work 
 properly and are documented. 
 
-## Contribution Model and  Development
+## Contribution Model and Development
 
 * Source hosted at [GitHub](https://github.com/ZoneMinder/ZoneMinder/)
-* Report issues/questions/feature requests on [GitHub Issues](https://github.com/ZoneMinder/ZoneMinder/issues)
+* Report issues at [GitHub Issues](https://github.com/ZoneMinder/ZoneMinder/issues)
+* Questions/feature requests in [Slack](https://zoneminder-chat.slack.com/) or [forums](https://forums.zoneminder.com)
 
 Pull requests are very welcome!  If you would like to contribute, please follow
-the following steps.
+the following steps.  While step 3 is optional, it is preferred.
 
 1. Fork the repo
 2. Open an issue at our [GitHub Issues Tracker](https://github.com/ZoneMinder/ZoneMinder/issues).
-   Describe the bug that you've found, or the feature which you're asking for.
-   Jot down the issue number (e.g. 456)
+   Follow the issue template to describe the bug or security issue you found. Please note feature
+   requests or questions should be posted in our user forum or Slack channel.
 3. Create your feature branch (`git checkout -b 456-my-new-feature`)
 4. Commit your changes (`git commit -am 'Added some feature'`)
    It is preferred that you 'commit early and often' instead of bunching all
@@ -89,5 +89,3 @@ the following steps.
 5. Push your branch to your fork on github (`git push origin 456-my-new-feature`)
 6. Create new Pull Request
 7. The team will then review, discuss and hopefully merge your changes.
-
-[![Analytics](https://ga-beacon.appspot.com/UA-15147273-6/ZoneMinder/README.md)](https://github.com/igrigorik/ga-beacon)

@@ -21,29 +21,43 @@
 function translate($name) {
   global $SLANG;
   // The isset is more performant
-  if ( isset($SLANG[$name]) || array_key_exists($name, $SLANG) )
+  if (( isset($SLANG[$name]) || array_key_exists($name, $SLANG) )) {
     return $SLANG[$name];
-  else
-    return $name;
+  } else {
+    $lcfirstName = mb_lcfirst($name);
+    if ( $lcfirstName !== $name and ( isset($SLANG[$lcfirstName]) || array_key_exists($lcfirstName, $SLANG) ) ) {
+      # We found a lowercase word, but since we didn't find anything in the previous step, the final word must be uppercase.
+      return mb_ucfirst($SLANG[$lcfirstName]);
+    } else {
+      $ucfirstName = mb_ucfirst($name);
+      if ( $ucfirstName !== $name and ( isset($SLANG[$ucfirstName]) || array_key_exists($ucfirstName, $SLANG) ) ) {
+        # We found a word in uppercase, but since we didn't find anything in the previous steps, the final word must be in lowercase.
+        return mb_lcfirst($SLANG[$ucfirstName]);
+      } else {
+        return $name;
+      }
+    }
+  }
 }
 
 function loadLanguage($prefix='') {
   global $user;
 
-  if ( $prefix )
+  if ($prefix)
     $prefix = $prefix.'/';
 
-  if ( isset($user['Language']) and $user['Language'] ) {
-    $userLangFile = $prefix.'lang/'.$user['Language'].'.php';
+  if ($user and $user->Language()) {
+    # Languages can only have letters, numbers and underscore
+    $userLangFile = $prefix.'lang/'.preg_replace('/[^[:alnum:]_]+/', '', $user->Language()).'.php';
 
-    if ( file_exists($userLangFile) ) {
+    if (file_exists($userLangFile)) {
       return $userLangFile;
     } else {
       ZM\Warning("User language file $userLangFile does not exist.");
     }
   }
 
-  $systemLangFile = $prefix.'lang/'.ZM_LANG_DEFAULT.'.php';
+  $systemLangFile = $prefix.'lang/'.preg_replace('/[^[:alnum:]_]+/', '', ZM_LANG_DEFAULT).'.php';
   if ( file_exists($systemLangFile) ) {
     return $systemLangFile;
   } else {
@@ -61,24 +75,33 @@ function loadLanguage($prefix='') {
 
 if ( $langFile = loadLanguage() ) {
   require_once($langFile);
+  if (false === strpos($langFile, 'en_gb.php')) {
+    $fallbackLangFile = 'lang/en_gb.php';
+    if ( file_exists($fallbackLangFile) ) {
+      $SLANG_USER = (isset($SLANG) && is_array($SLANG)) ? $SLANG : array();
+      $VLANG_USER = (isset($VLANG) && is_array($VLANG)) ? $VLANG : array();
+      $OLANG_USER = (isset($OLANG) && is_array($OLANG)) ? $OLANG : array();
+      $CLANG_USER = (isset($CLANG) && is_array($CLANG)) ? $CLANG : array();
+      require_once($fallbackLangFile);
+      $SLANG = (isset($SLANG) && is_array($SLANG)) ? $SLANG : array();
+      $VLANG = (isset($VLANG) && is_array($VLANG)) ? $VLANG : array();
+      $OLANG = (isset($OLANG) && is_array($OLANG)) ? $OLANG : array();
+      $CLANG = (isset($CLANG) && is_array($CLANG)) ? $CLANG : array();
+      $SLANG_ = array_replace_recursive($SLANG, $SLANG_USER);
+      $VLANG_ = array_replace_recursive($VLANG, $VLANG_USER);
+      $OLANG_ = array_replace_recursive($OLANG, $OLANG_USER);
+      $CLANG_ = array_replace_recursive($CLANG, $CLANG_USER);
+      $SLANG = $SLANG_;
+      $VLANG = $VLANG_;
+      $OLANG = $OLANG_;
+      $CLANG = $CLANG_;
+      unset($SLANG_USER, $VLANG_USER, $OLANG_USER, $CLANG_USER, $SLANG_, $VLANG_, $OLANG_, $CLANG_);
+    }
+  }
   require_once('lang/default.php');
   foreach ($DLANG as $key => $value) {
     if ( ! (isset($SLANG[$key]) || array_key_exists($key, $SLANG)) )
       $SLANG[$key] = $DLANG[$key];
   }
 }
-
-//
-// Date and time formats fallback, if not set up by the language file already
-//
-defined('DATE_FMT_CONSOLE_LONG') or define('DATE_FMT_CONSOLE_LONG', 'D jS M, g:ia');		// This is the main console date/time, date() or strftime() format
-defined('DATE_FMT_CONSOLE_SHORT') or define('DATE_FMT_CONSOLE_SHORT', '%H:%M');		// This is the xHTML console date/time, date() or strftime() format
-
-defined('STRF_FMT_DATETIME') or define('STRF_FMT_DATETIME', '%c');	// Strftime locale aware format for dates with times
-defined('STRF_FMT_DATE') or define('STRF_FMT_DATE', '%x');					// Strftime locale aware format for dates without times
-defined('STRF_FMT_TIME') or define('STRF_FMT_TIME', '%X');					// Strftime locale aware format for times without dates
-
-defined('STRF_FMT_DATETIME_SHORT') or define('STRF_FMT_DATETIME_SHORT', '%y/%m/%d %H:%M:%S');	// Strftime shorter format for dates with time, not locale aware
-defined('STRF_FMT_DATETIME_SHORTER') or define('STRF_FMT_DATETIME_SHORTER','%m/%d %H:%M:%S');// Strftime shorter format for dates with time, not locale aware, used where space is tight
-
 ?>

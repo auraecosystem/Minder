@@ -5,10 +5,7 @@ This screen lets you customize several aspects of the web interface of ZoneMinde
 .. image:: images/Options_web.png
 
 
-WEB_TITLE - 
-
-.. todo ::
-  not quite sure what this does. Seems to change the "target" name - not sure what effect it is supposed to have.
+WEB_TITLE - The actual text that is shown on the login screen. It is possible that it also appears in other areas.
 
 WEB_TITLE_PREFIX - If you have more than one installation of ZoneMinder it can be helpful to display different titles for each one. Changing this option allows you to customise the window titles to include further information to aid identification.
 
@@ -48,4 +45,4 @@ WEB_USE_OBJECT_TAGS - There are two methods of including media content in web pa
 
 WEB_XFRAME_WARN - When creating a Web Site monitor, if the target web site has X-Frame-Options set to sameorigin in the header, the site will not display in ZoneMinder. This is a design feature in most modern browsers. When this condition occurs, ZoneMinder will write a warning to the log file. To get around this, one can install a browser plugin or extension to ignore X-Frame headers, and then the page will display properly. Once the plugin or extension has ben installed, the end user may choose to turn this warning off
 
-WEB_FILTER_SOURCE - This option only affects monitors with a source type of Ffmpeg, Libvlc, or WebSite. This setting controls what information is displayed in the Source column on the console. Selecting 'None' will not filter anything. The entire source string will be displayed, which may contain sensitive information. Selecting 'NoCredentials' will strip out usernames and passwords from the string. If there are any port numbers in the string and they are common (80, 554, etc) then those will be removed as well. Selecting 'Hostname' will filter out all information except for the hostname or ip address. When in doubt, stay with the default 'Hostname'. This feature uses the php function 'url_parts' to identify the various pieces of the url. If the url in question is unusual or not standard in some way, then filtering may not produce the desired results.
+WEB_FILTER_SOURCE - This option only affects monitors with a source type of Ffmpeg or WebSite. This setting controls what information is displayed in the Source column on the console. Selecting 'None' will not filter anything. The entire source string will be displayed, which may contain sensitive information. Selecting 'NoCredentials' will strip out usernames and passwords from the string. If there are any port numbers in the string and they are common (80, 554, etc) then those will be removed as well. Selecting 'Hostname' will filter out all information except for the hostname or ip address. When in doubt, stay with the default 'Hostname'. This feature uses the php function 'url_parts' to identify the various pieces of the url. If the url in question is unusual or not standard in some way, then filtering may not produce the desired results.

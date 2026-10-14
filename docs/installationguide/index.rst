@@ -8,11 +8,11 @@ Contents:
 .. toctree::
    :maxdepth: 2
 
-   easydocker 
    packpack
    ubuntu
    debian
    redhat
+   macos
    windows_wsl
    multiserver
    dedicateddrive

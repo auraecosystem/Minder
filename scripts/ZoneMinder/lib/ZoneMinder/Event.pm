@@ -32,6 +32,9 @@ require ZoneMinder::Base;
 require ZoneMinder::Object;
 require ZoneMinder::Storage;
 require ZoneMinder::Frame;
+require ZoneMinder::Monitor;
+require ZoneMinder::Event_Tag;
+require ZoneMinder::Tag;
 require Date::Manip;
 require File::Find;
 require File::Path;
@@ -42,6 +45,7 @@ require Date::Parse;
 require POSIX;
 use Date::Format qw(time2str);
 use Time::HiRes qw(gettimeofday tv_interval stat);
+use Scalar::Util qw(looks_like_number);
 
 #our @ISA = qw(ZoneMinder::Object);
 use parent qw(ZoneMinder::Object);
@@ -68,8 +72,8 @@ $serial = $primary_key = 'Id';
   SecondaryStorageId
   Name
   Cause
-  StartTime
-  EndTime
+  StartDateTime
+  EndDateTime
   Width
   Height
   Length
@@ -111,8 +115,8 @@ sub Time {
     $_[0]{Time} = $_[1];
   }
   if ( ! defined $_[0]{Time} ) {
-    if ( $_[0]{StartTime} ) {
-      $_[0]{Time} = Date::Parse::str2time( $_[0]{StartTime} );
+    if ( $_[0]{StartDateTime} ) {
+      $_[0]{Time} = Date::Parse::str2time( $_[0]{StartDateTime} );
     }
   }
   return $_[0]{Time};
@@ -218,7 +222,7 @@ sub LinkPath {
             '.'.$$event{Id}
             );
       } elsif ( $$event{Path} ) {
-        if ( ( $event->RelativePath() =~ /^(\d+\/\d{4}\/\d{2}\/\d{2})/ ) ) {
+        if ( ( $event->RelativePath() =~ /^(\d+\/\d{2}\/\d{2}\/\d{2})/ ) ) {
           $$event{LinkPath} = $1.'/.'.$$event{Id};
         } else {
           Error("Unable to get LinkPath from Path for $$event{Id} $$event{Path}");
@@ -262,11 +266,13 @@ sub createIdFile {
 }
 
 sub GenerateVideo {
-  my ( $self, $rate, $fps, $scale, $size, $overwrite, $format ) = @_;
+  my ( $self, $rate, $fps, $scale, $size, $overwrite, $format, $transforms ) = @_;
 
   my $event_path = $self->Path();
   chdir($event_path);
-  ( my $video_name = $self->{Name} ) =~ s/\s/_/g;
+  # Name is user editable; keep the output file inside the event directory.
+  ( my $video_name = $self->{Name} ) =~ s/[^-A-Za-z0-9_.]/_/g;
+  $video_name =~ s/^\./_/;
 
   my @file_parts;
   if ( $rate ) {
@@ -275,14 +281,14 @@ sub GenerateVideo {
     $file_rate =~ s/_00//;
     $file_rate =~ s/(_\d+)0+$/$1/;
     $file_rate = 'r'.$file_rate;
-    push( @file_parts, $file_rate );
+    push @file_parts, $file_rate;
   } elsif ( $fps ) {
     my $file_fps = $fps;
     $file_fps =~ s/\./_/;
     $file_fps =~ s/_00//;
     $file_fps =~ s/(_\d+)0+$/$1/;
     $file_fps = 'R'.$file_fps;
-    push( @file_parts, $file_fps );
+    push @file_parts, $file_fps;
   }
 
   if ( $scale ) {
@@ -296,7 +302,11 @@ sub GenerateVideo {
     my $file_size = 'S'.$size;
     push @file_parts, $file_size;
   }
-  my $video_file = join('-', $video_name, $file_parts[0], $file_parts[1] ).'.'.$format;
+  my @transforms = split(',', $transforms);
+  foreach (@transforms) {
+    push @file_parts, $_;
+  }
+  my $video_file = join('-', $video_name, @file_parts).'.'.$format;
   if ( $overwrite || !-s $video_file ) {
     Info("Creating video file $video_file for event $self->{Id}");
 
@@ -311,28 +321,57 @@ sub GenerateVideo {
 
     my $width = $self->{Width};
     my $height = $self->{Height};
-    my $video_size = " ${width}x${height}";
+    my $video_size = "${width}x${height}";
 
     if ( $scale ) {
       if ( $scale != 1.0 ) {
         $width = int($width*$scale);
         $height = int($height*$scale);
-        $video_size = " ${width}x${height}";
+        $video_size = "${width}x${height}";
       }
     } elsif ( $size ) {
       $video_size = $size;
     }
-    my $command = $Config{ZM_PATH_FFMPEG}
-    ." -y -r $frame_rate "
-      .$Config{ZM_FFMPEG_INPUT_OPTIONS}
-    .' -i ' . ( $$self{DefaultVideo} ? $$self{DefaultVideo} : '%0'.$Config{ZM_EVENT_IMAGE_DIGITS} .'d-capture.jpg' )
-#. " -f concat -i /tmp/event_files.txt"
-      ." -s $video_size "
-      .$Config{ZM_FFMPEG_OUTPUT_OPTIONS}
-    ." '$video_file' > ffmpeg.log 2>&1"
-      ;
-    Debug($command);
-    my $output = qx($command);
+    # Built as a list and run without a shell. Two of these arguments are event
+    # fields an operator with Events=Edit can set through the API: DefaultVideo
+    # used to be interpolated into the command line with no quoting at all, and
+    # the name behind $video_file only has whitespace replaced, so a single
+    # quote in it escaped the quoting that was there. Either one gave arbitrary
+    # command execution as the web account. As a list there is no shell to
+    # escape from, whatever the fields hold. See GHSA-pfph-4j9j-7cv7.
+    # DefaultVideo is a bare filename in the event directory; drop any path.
+    (my $input_file = $$self{DefaultVideo} // '') =~ s{.*[/\\]}{}s;
+    $input_file = '%0'.$Config{ZM_EVENT_IMAGE_DIGITS}.'d-capture.jpg' if !$input_file;
+
+    my @command = (
+      $Config{ZM_PATH_FFMPEG},
+      '-y', '-r', $frame_rate,
+      # The configured option strings are admin-set and hold several options
+      # each, so they are split on whitespace rather than passed as one word.
+      grep { $_ ne '' } split(/\s+/, $Config{ZM_FFMPEG_INPUT_OPTIONS}),
+      '-i', $input_file,
+      (map { ('-vf', $_) } @transforms),
+      '-s', $video_size,
+      grep { $_ ne '' } split(/\s+/, $Config{ZM_FFMPEG_OUTPUT_OPTIONS}),
+      $video_file,
+    );
+
+    Debug('Executing: '.join(' ', @command));
+
+    my $pid = fork();
+    if ( !defined $pid ) {
+      Error("Unable to fork for video generation: $!");
+      return;
+    }
+    if ( !$pid ) {
+      # ffmpeg's own output still goes to the log file the error message below
+      # points the operator at.
+      open(STDOUT, '>', 'ffmpeg.log') or exit(1);
+      open(STDERR, '>&', \*STDOUT) or exit(1);
+      exec { $command[0] } @command;
+      exit(1);
+    }
+    waitpid($pid, 0);
 
     my $status = $? >> 8;
     if ( $status ) {
@@ -349,47 +388,116 @@ sub GenerateVideo {
   return;
 } # end sub GenerateVideo
 
+# Note about transactions, this function may be called with rows locked and hence in a transaction.
+# So we will detect if we are in a transaction, and if not, start one.  We will NOT do rollback or 
+# commits unless we started the transaction.
+
 sub delete {
-  my $event = $_[0];
+  my $event = shift;
+
+  if ( !$event->canEdit() ) {
+    Warning('No permission to delete event.');
+    return 'No permission to delete event.';
+  }
 
   my $in_zmaudit = ( $0 =~ 'zmaudit.pl$');
 
   if ( ! $in_zmaudit ) {
-    if ( ! ( $event->{Id} and $event->{MonitorId} and $event->{StartTime} ) ) {
+    if ( ! ( $event->{Id} and $event->{MonitorId} and $event->{StartDateTime} ) ) {
       # zmfilter shouldn't delete anything in an odd situation. zmaudit will though.
       my ( $caller, undef, $line ) = caller;
-      Warning("$0 Can't Delete event $event->{Id} from Monitor $event->{MonitorId} StartTime:".
-        (defined($event->{StartTime})?$event->{StartTime}:'undef')." from $caller:$line");
+      Warning("$0 Can't Delete event $event->{Id} from Monitor $event->{MonitorId} StartDateTime:".
+        (defined($event->{StartDateTime})?$event->{StartDateTime}:'undef')." from $caller:$line");
       return;
     }
     if ( !($event->Storage()->Path() and -e $event->Storage()->Path()) ) {
-      Warning('Not deleting event because storage path doesn\'t exist');
+      Warning('Not deleting event because storage path ('.$event->Storage()->Path().') doesn\'t exist');
       return;
     }
   }
 
   if ( $$event{Id} ) {
     # Need to have an event Id if we are to delete from the db.  
-    Info("Deleting event $event->{Id} from Monitor $event->{MonitorId} StartTime:$event->{StartTime} from ".$event->Path());
+    Info("Deleting event $event->{Id} from Monitor $event->{MonitorId} StartDateTime:$event->{StartDateTime} from ".$event->Path());
     $ZoneMinder::Database::dbh->ping();
 
-    $ZoneMinder::Database::dbh->begin_work();
-    #$event->lock_and_load();
+    my $in_transaction = $ZoneMinder::Database::dbh->{AutoCommit} ? 0 : 1;
 
-    ZoneMinder::Database::zmDbDo('DELETE FROM Frames WHERE EventId=?', $$event{Id});
-    if ( $ZoneMinder::Database::dbh->errstr() ) {
-      $ZoneMinder::Database::dbh->commit();
-      return;
-    }
-    ZoneMinder::Database::zmDbDo('DELETE FROM Stats WHERE EventId=?', $$event{Id});
-    if ( $ZoneMinder::Database::dbh->errstr() ) {
-      $ZoneMinder::Database::dbh->commit();
-      return;
+    # InnoDB X-locks the matched Events row during WHERE evaluation, before
+    # either BEFORE or AFTER trigger bodies fire, so the lock acquisition
+    # order is the same regardless of trigger timing:
+    #   Events[Id] -> Events_Hour/Day/Week/Month[EventId] -> Event_Summaries[MonitorId]
+    # event_delete_trigger (BEFORE DELETE on Events) and event_update_trigger
+    # (AFTER UPDATE on Events) both propagate into the bucket tables, whose
+    # own triggers then UPDATE Event_Summaries — that's the canonical chain.
+    # zmstats.pl prune+resync follows the matching prefix (bucket DELETEs
+    # then UPDATE Event_Summaries) and crucially does NOT pre-lock
+    # Event_Summaries: that would put ES before buckets and re-introduce the
+    # inversion against zma's UPDATE path.
+    #
+    # READ COMMITTED drops the next-key/gap locks that two concurrent filter
+    # workers deleting adjacent EventIds in the bucket tables would otherwise
+    # take. SET TRANSACTION applies to the next transaction only, so it has
+    # to be re-issued before each begin_work (and is skipped when the caller
+    # is managing the TX).
+    #
+    # Retry on deadlock (MariaDB ER_LOCK_DEADLOCK = 1213) only when we own
+    # the TX; if the caller is managing one, bail and let them decide.
+    my $attempt = 0;
+    my $max_attempts = 5;
+    while (1) {
+      $attempt++;
+      if (!$in_transaction) {
+        # Use $dbh->do directly, NOT zmDbDo: zmDbDo's success Debug would
+        # write to the Logs table on this same $dbh, and that INSERT would
+        # become the "next transaction" that consumes the isolation level
+        # directive — silently dropping our delete TX back to the default.
+        $ZoneMinder::Database::dbh->do('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        $ZoneMinder::Database::dbh->begin_work();
+      }
+
+      # Order: Stats -> Event_Data -> Frames -> Events (least to greatest reference depth)
+      my $err = 0;
+      my $errstr = '';
+      foreach my $sql (
+        'DELETE FROM Stats WHERE EventId=?',
+        'DELETE FROM Event_Data WHERE EventId=?',
+        'DELETE FROM Frames WHERE EventId=?',
+        'DELETE FROM Events WHERE Id=?',
+      ) {
+        ZoneMinder::Database::zmDbDo($sql, $$event{Id});
+        $err = $ZoneMinder::Database::dbh->err() // 0;
+        if ($err) {
+          # Capture before rollback, which can clear errstr on some drivers.
+          $errstr = $ZoneMinder::Database::dbh->errstr() // '';
+          last;
+        }
+      }
+
+      if (!$err) {
+        $ZoneMinder::Database::dbh->commit() if !$in_transaction;
+        last;
+      }
+
+      $ZoneMinder::Database::dbh->rollback() if !$in_transaction;
+      if ($in_transaction or $err != 1213 or $attempt >= $max_attempts) { # 1213 = ER_LOCK_DEADLOCK
+        # Surface the final failure ourselves — zmDbDo suppresses its Error
+        # log on 1213 inside a caller-managed TX (we own the retry), and the
+        # exhausted-retries case would otherwise return silently.
+        Error("Failed deleting event $$event{Id} after $attempt attempt(s): err=$err $errstr")
+          if $err;
+        return;
+      }
+      Debug("Deadlock deleting event $$event{Id} attempt $attempt/$max_attempts, retrying");
+      select(undef, undef, undef, 0.05 * (1 << $attempt) + rand(0.05));
     }
 
-    # Do it individually to avoid locking up the table for new events
-    ZoneMinder::Database::zmDbDo('DELETE FROM Events WHERE Id=?', $$event{Id});
-    $ZoneMinder::Database::dbh->commit();
+    # Relative, single-statement adjustment.  A lock_and_load + save here would
+    # be a read-modify-write whose FOR UPDATE lock is dropped the moment the
+    # SELECT autocommits, so the absolute value it then writes clobbers any
+    # adjustment zmc or another filter made in between.
+    # See ZoneMinder::Storage::adjust_diskspace.
+    $event->Storage()->adjust_diskspace(-$event->DiskSpace()) if $event->DiskSpace();
   }
 
   if ( ( $in_zmaudit or (!$Config{ZM_OPT_FAST_DELETE})) and $event->Storage()->DoDelete() ) {
@@ -401,6 +509,11 @@ sub delete {
 
 sub delete_files {
   my $event = shift;
+
+  if ( !$event->canEdit() ) {
+    Warning('No permission to delete event.');
+    return 'No permission to delete event.';
+  }
 
   foreach my $Storage (
     @_ ? ($_[0]) : (
@@ -424,37 +537,7 @@ sub delete_files {
       ( $storage_path ) = ( $storage_path =~ /^(.*)$/ ); # De-taint
       ( $event_path ) = ( $event_path =~ /^(.*)$/ ); # De-taint
 
-      my $deleted = 0;
-      if ( $$Storage{Type} and ( $$Storage{Type} eq 's3fs' ) ) {
-        my $url = $$Storage{Url};
-        $url =~ s/^(s3|s3fs):\/\///ig;
-        my ( $aws_id, $aws_secret, $aws_host, $aws_bucket, $subpath ) = ( $url =~ /^\s*([^:]+):([^@]+)@([^\/]*)\/([^\/]+)(\/.+)?\s*$/ );
-        Debug("S3 url parsed to id:$aws_id secret:$aws_secret host:$aws_host, bucket:$aws_bucket, subpath:$subpath\n from $url");
-        eval {
-          require Net::Amazon::S3;
-          my $s3 = Net::Amazon::S3->new( {
-              aws_access_key_id     => $aws_id,
-              aws_secret_access_key => $aws_secret,
-              ( $aws_host ? ( host => $aws_host ) : () ),
-              authorization_method => 'Net::Amazon::S3::Signature::V4',
-            });
-          my $bucket = $s3->bucket($aws_bucket);
-          if ( ! $bucket ) {
-            Error("S3 bucket $bucket not found.");
-            die;
-          }
-          if ( $bucket->delete_key($subpath.$event_path) ) {
-            $deleted = 1;
-          } else {
-            Error('Failed to delete from S3:'.$s3->err . ': ' . $s3->errstr);
-          }
-        };
-        Error($@) if $@;
-      } # end if s3fs
-      if ( !$deleted ) {
-        my $command = "/bin/rm -rf $storage_path/$event_path";
-        ZoneMinder::General::executeShellCommand($command);
-      }
+      $Storage->delete_path($event_path);
     } else {
       Error('No event path in delete files. ' . $event->to_string());
     } # end if event_path
@@ -468,33 +551,74 @@ sub delete_files {
       }
     } # end if Scheme eq Deep
 
-    # Now check for empty directories and delete them.
-    my @path_parts = split('/', $event_path);
-    pop @path_parts;
-    # Guaranteed the first part is the monitor id
-    Debug("Initial path_parts: @path_parts");
-    while ( @path_parts > 1 ) {
-      my $path = join('/', $storage_path, @path_parts);
-      my $dh;
-      if ( !opendir($dh, $path) ) {
-        Warning("Fail to open $path");
-        last;
-      }
-      my @dir =  readdir($dh);
-      closedir($dh);
-      if ( scalar(grep { $_ ne '.' and $_ ne '..' } @dir) == 0 ) {
-        Debug("Removing empty dir at $path");
-        if ( !rmdir $path ) {
-          Warning("Fail to rmdir $path: $!");
+    if ($Storage->Type() ne 's3fs') {
+      # Now check for empty directories and delete them.
+      my @path_parts = split('/', $event_path);
+      pop @path_parts;
+      # Guaranteed the first part is the monitor id
+      Debug("Initial path_parts: @path_parts");
+      while ( @path_parts > 1 ) {
+        my $path = join('/', $storage_path, @path_parts);
+        my $dh;
+        if ( !opendir($dh, $path) ) {
+          Warning("Fail to open $path");
           last;
         }
-      } else {
-        Debug("Dir $path is not empty @dir");
-        last;
-      }
-      pop @path_parts;
-    } # end while path_parts
+        my @dir =  readdir($dh);
+        closedir($dh);
+        if ( scalar(grep { $_ ne '.' and $_ ne '..' } @dir) == 0 ) {
+          Debug("Removing empty dir at $path");
+          if ( !rmdir $path ) {
+            Warning("Fail to rmdir $path: $!");
+            last;
+          }
+        } else {
+          Debug(4, "Dir $path is not empty @dir");
+          last;
+        }
+        pop @path_parts;
+      } # end while path_parts
+    } # end if not s3fs
+  } # end foreach Storage
+} # end sub delete_files
 
+sub delete_analysis_jpegs {
+  my $event = shift;
+
+  if ( !$event->canEdit() ) {
+    Warning('No permission to delete event.');
+    return 'No permission to delete event.';
+  }
+
+  foreach my $Storage (
+    @_ ? ($_[0]) : (
+      new ZoneMinder::Storage($$event{StorageId}),
+      ( $$event{SecondaryStorageId} ? new ZoneMinder::Storage($$event{SecondaryStorageId}) : () ),
+    ) ) {
+    my $storage_path = $Storage->Path();
+
+    if ( !$storage_path ) {
+      Error("Empty storage path when deleting files for event $$event{Id} with storage id $$event{StorageId}");
+      return;
+    }
+
+    if ( !$$event{MonitorId} ) {
+      Error("No monitor id assigned to event $$event{Id}");
+      return;
+    }
+    my $event_path = $event->RelativePath();
+    Debug("Deleting analysis jpegs for Event $$event{Id} from $storage_path///$event_path, scheme is $$event{Scheme}.");
+    if ( $event_path ) {
+      ( $storage_path ) = ( $storage_path =~ /^(.*)$/ ); # De-taint
+      ( $event_path ) = ( $event_path =~ /^(.*)$/ ); # De-taint
+      my @files = glob("$storage_path/$event_path/*analyse.jpg");
+      Debug(@files . ' analysis jpegs found to delete');
+      foreach my $file (@files) {
+        $Storage->delete_path($event_path.'/'.$file);
+      }
+    } else {
+      Error('No event path in delete files. ' . $event->to_string());
+    } # end if event_path
   } # end foreach Storage
 } # end sub delete_files
 
@@ -550,25 +674,29 @@ sub age {
 }
 
 sub DiskSpace {
-  if ( @_ > 1 ) {
-    Debug("Cleared DiskSpace, was $_[0]{DiskSpace}") if $_[0]{DiskSpace};
-    $_[0]{DiskSpace} = $_[1];
-  }
-  if ( ! defined $_[0]{DiskSpace} ) {
-    if ( -e $_[0]->Path() ) {
+  my $self = shift;
+  $$self{DiskSpace} = shift if @_;
+  if ( ! defined $$self{DiskSpace} ) {
+    if ( -e $self->Path() ) {
       my $size = 0;
-      File::Find::find( { wanted=>sub { $size += -f $_ ? -s _ : 0 }, untaint=>1 }, $_[0]->Path() );
-      $_[0]{DiskSpace} = $size;
-      Debug("DiskSpace for event $_[0]{Id} at $_[0]{Path} Updated to $size bytes");
+      File::Find::find( { wanted=>sub { $size += -f $_ ? -s $_ : 0 }, untaint=>1 }, $self->Path() );
+      $$self{DiskSpace} = $size;
+      Debug("DiskSpace for event $$self{Id} at $$self{Path} Updated to $size bytes");
     } else {
-      Warning("DiskSpace: Event does not exist at $_[0]{Path}:" . $_[0]->to_string() );
+      Warning("DiskSpace: Event does not exist at $$self{Path}:" . $self->to_string());
     }
   } # end if ! defined DiskSpace
-  return $_[0]{DiskSpace};
+  return $$self{DiskSpace};
 }
 
+# Icon: I removed the locking from this. So we now have an assumption that the Event object is up to date.
 sub CopyTo {
   my ( $self, $NewStorage ) = @_;
+
+  if ( !$self->canEdit() ) {
+    Warning('No permission to copy event.');
+    return 'No permission to copy event.';
+  }
 
   my $OldStorage = $self->Storage(undef);
   my ( $OldPath ) = ( $self->Path() =~ /^(.*)$/ ); # De-taint
@@ -578,7 +706,7 @@ sub CopyTo {
   # First determine if we can move it to the dest.
   # We do this before bothering to lock the event
   my ( $NewPath ) = ( $NewStorage->Path() =~ /^(.*)$/ ); # De-taint
-  if ( ! $$NewStorage{Id} ) {
+  if ( ! looks_like_number($$NewStorage{Id}) ) {
     return 'New storage does not have an id.  Moving will not happen.';
   } elsif ( $$NewStorage{Id} == $$self{StorageId} ) {
     return 'Event is already located at ' . $NewPath;
@@ -592,16 +720,12 @@ sub CopyTo {
     Debug("$NewPath is good");
   }
 
-  $ZoneMinder::Database::dbh->begin_work();
-  $self->lock_and_load();
   # data is reloaded, so need to check that the move hasn't already happened.
   if ( $$self{StorageId} == $$NewStorage{Id} ) {
-    $ZoneMinder::Database::dbh->commit();
     return 'Event has already been moved by someone else.';
   }
 
   if ( $$OldStorage{Id} != $$self{StorageId} ) {
-    $ZoneMinder::Database::dbh->commit();
     return 'Old Storage path changed, Event has moved somewhere else.';
   }
 
@@ -610,88 +734,48 @@ sub CopyTo {
 	($NewPath) = ( $NewPath =~ /^(.*)$/ ); # De-taint
   if ( $NewPath eq $OldPath ) {
     $ZoneMinder::Database::dbh->commit();
-    return "New path and old path are the same! $NewPath";
+    return "New path and old path are the same! $OldPath $NewPath";
   }
   Debug("Copying event $$self{Id} from $OldPath to $NewPath");
 
   my $moved = 0;
 
-  if ( $$NewStorage{Type} eq 's3fs' ) {
-    if ( $$NewStorage{Url} ) {
-      my $url = $$NewStorage{Url};
-      $url =~ s/^(s3|s3fs):\/\///ig;
-      my ( $aws_id, $aws_secret, $aws_host, $aws_bucket, $subpath ) = ( $url =~ /^\s*([^:]+):([^@]+)@([^\/]*)\/([^\/]+)(\/.+)?\s*$/ );
-      Debug("S3 url parsed to id:$aws_id secret:$aws_secret host:$aws_host, bucket:$aws_bucket, subpath:$subpath\n from $url");
-      if ( $aws_id and $aws_secret and $aws_host and $aws_bucket ) {
-        eval {
-          require Net::Amazon::S3;
-          require File::Slurp;
-          my $s3 = Net::Amazon::S3->new( {
-              aws_access_key_id     => $aws_id,
-              aws_secret_access_key => $aws_secret,
-              ( $aws_host ? ( host => $aws_host ) : () ),
-              authorization_method => 'Net::Amazon::S3::Signature::V4',
-            });
-          my $bucket = $s3->bucket($aws_bucket);
-          if ( !$bucket ) {
-            Error("S3 bucket $bucket not found.");
-            die;
+  if ($$NewStorage{Type} eq 's3fs') {
+    my $s3 = $NewStorage->s3();
+    my $bucket = $NewStorage->bucket();
+    if ($s3 and $bucket) {
+      my $event_path = $NewStorage->aws_subpath().$self->RelativePath();
+      my @files = glob("$OldPath/*");
+      Debug("Files to move @files");
+      eval {
+        foreach my $file (@files) {
+          next if $file =~ /^\./;
+          ($file) = ($file =~ /^(.*)$/); # De-taint
+          my $starttime = [gettimeofday];
+          Debug("Moving file $file to $NewPath");
+          my $size = -s $file;
+          if (!$size) {
+            Info('Not moving file with 0 size');
+          }
+          my $filename = $event_path.'/'.File::Basename::basename($file);
+          if (!$bucket->add_key_filename($filename, $file)) {
+            die "Unable to add key for $filename " . $s3->err . ': '. $s3->errstr;
           }
 
-          my $event_path = $subpath.$self->RelativePath();
-          if ( 0 ) { # Not neccessary
-            Debug("Making directory $event_path/");
-            if ( !$bucket->add_key($event_path.'/', '') ) {
-              Warning("Unable to add key for $event_path/ :". $s3->err . ': '. $s3->errstr());
-            }
-          }
+          my $duration = tv_interval($starttime);
+          Debug('PUT to S3 ' . Number::Bytes::Human::format_bytes($size) . " in $duration seconds = " . Number::Bytes::Human::format_bytes($duration?$size/$duration:$size) . '/sec');
+        } # end foreach file.
 
-          my @files = glob("$OldPath/*");
-          Debug("Files to move @files");
-          foreach my $file ( @files ) {
-            next if $file =~ /^\./;
-            ( $file ) = ( $file =~ /^(.*)$/ ); # De-taint
-            my $starttime = [gettimeofday];
-            Debug("Moving file $file to $NewPath");
-            my $size = -s $file;
-            if ( ! $size ) {
-              Info('Not moving file with 0 size');
-            }
-            if ( 0 ) {
-              my $file_contents = File::Slurp::read_file($file);
-              if ( ! $file_contents ) {
-                die 'Loaded empty file, but it had a size. Giving up';
-              }
-
-              my $filename = $event_path.'/'.File::Basename::basename($file);
-              if ( ! $bucket->add_key($filename, $file_contents) ) {
-                die "Unable to add key for $filename : ".$s3->err . ': ' . $s3->errstr;
-              }
-            } else {
-              my $filename = $event_path.'/'.File::Basename::basename($file);
-              if ( ! $bucket->add_key_filename($filename, $file) ) {
-                die "Unable to add key for $filename " . $s3->err . ': '. $s3->errstr;
-              }
-            }
-
-            my $duration = tv_interval($starttime);
-            Debug('PUT to S3 ' . Number::Bytes::Human::format_bytes($size) . " in $duration seconds = " . Number::Bytes::Human::format_bytes($duration?$size/$duration:$size) . '/sec');
-          } # end foreach file.
-
-          $moved = 1;
-        };
-        Error($@) if $@;
-      } else {
-        Error("Unable to parse S3 Url into it's component parts.");
-      }
-      #die $@ if $@;
-    } # end if Url
-  } # end if s3
+        $moved = 1;
+      };
+      Error($@) if $@;
+    } # end if s3
+  } # end if s3f3
 
   my $error = '';
-  if ( !$moved ) {
+  if (!$moved) {
     File::Path::make_path($NewPath, {error => \my $err});
-    if ( @$err ) {
+    if (@$err) {
       for my $diag (@$err) {
         my ($file, $message) = %$diag;
         next if $message eq 'File exists';
@@ -702,23 +786,20 @@ sub CopyTo {
         }
       }
     }
-    if ( $error ) {
-      $ZoneMinder::Database::dbh->commit();
-      return $error;
-    }
-    my @files = glob("$OldPath/*");
-    if ( ! @files ) {
-      $ZoneMinder::Database::dbh->commit();
-      return 'No files to move.';
-    }
+    return $error if $error;
+    Debug("Made new path at $NewPath, starting to glob");
+    opendir(my $dh, $OldPath) || return "Failed to open $OldPath";
+    my @files = readdir($dh);
+    return 'No files to move.' if !@files;
 
     for my $file (@files) {
       next if $file =~ /^\./;
-      ( $file ) = ( $file =~ /^(.*)$/ ); # De-taint
+      ($file) = ($file =~ /^(.*)$/); # De-taint
+      $file = $OldPath.'/'.$file;
+      next if !-f $file;
       my $starttime = [gettimeofday];
-      Debug("Moving file $file to $NewPath");
       my $size = -s $file;
-      if ( ! File::Copy::copy( $file, $NewPath ) ) {
+      if (!File::Copy::copy($file, $NewPath)) {
         $error .= "Copy failed: for $file to $NewPath: $!";
         last;
       }
@@ -727,29 +808,63 @@ sub CopyTo {
     } # end foreach file.
   } # end if ! moved
 
-  if ( $error ) {
-    $ZoneMinder::Database::dbh->commit();
-    return $error;
-  }
+  return $error;
 } # end sub CopyTo
 
 sub MoveTo {
+  my ($self, $NewStorage) = @_;
 
-  my ( $self, $NewStorage ) = @_;
+  if (!$self->canEdit()) {
+    Warning('No permission to move event.');
+    return 'No permission to move event.';
+  }
+
+  my $was_in_transaction = !$ZoneMinder::Database::dbh->{AutoCommit};
+  $ZoneMinder::Database::dbh->begin_work() if !$was_in_transaction;
+  if (!$self->lock_and_load()) {
+    Warning('Unable to lock event record '.$$self{Id}); # The fact that we are in a transaction might not imply locking
+    $ZoneMinder::Database::dbh->commit() if !$was_in_transaction;
+    return 'Unable to lock event record';
+  }
+
   my $OldStorage = $self->Storage(undef);
 
-  my $error = $self->CopyTo($NewStorage);
-  return $error if $error;
+  # In strange situations where commits don't happen, the files can be moved but the db hasn't been updated.
+  # So here's a special case test to fix that.
+  my ( $SrcPath ) = ( $self->Path(undef) =~ /^(.*)$/ ); # De-taint
+  my $NewPath = $NewStorage->Path().'/'.$self->RelativePath();
+  $NewPath =~ /^(.*)$/; # De-taint
+
+  my $error = '';
+  if ((! -e $SrcPath) and -e $NewPath) {
+    Warning("Event $$self{Id} has already been moved from $$OldStorage{Id} $SrcPath, just updating the event record in db to $$NewStorage{Id} $NewPath.");
+  } else {
+    $error = $self->CopyTo($NewStorage);
+    if ($error) {
+      $ZoneMinder::Database::dbh->commit() if !$was_in_transaction;
+      return $error;
+    }
+  }
+
+  my $old_diskspace = $self->DiskSpace();
+  my $new_diskspace = $self->DiskSpace(undef);
 
   # Succeeded in copying all files, so we may now update the Event.
-  $$self{StorageId} = $$NewStorage{Id};
   $self->Storage($NewStorage);
   $error .= $self->save();
-  if ( $error ) {
-    $ZoneMinder::Database::dbh->commit();
+  # Going to leave it to upper layer as to whether we rollback or not
+  if ($error) {
+    $ZoneMinder::Database::dbh->rollback() if !$was_in_transaction;
     return $error;
   }
-  $ZoneMinder::Database::dbh->commit();
+  $ZoneMinder::Database::dbh->commit() if !$was_in_transaction;
+
+  # Update storage diskspace.  The triggers no longer do this. This is ... less
+  # important, so it is a relative adjustment rather than a read-modify-write:
+  # one statement per storage area, no lock outliving it.
+  $OldStorage->adjust_diskspace(-$old_diskspace) if $old_diskspace;
+  $NewStorage->adjust_diskspace($new_diskspace) if $new_diskspace;
+
   $self->delete_files($OldStorage);
   return $error;
 } # end sub MoveTo
@@ -760,6 +875,9 @@ sub recover_timestamps {
   my ( $Event, $path ) = @_;
   $path = $Event->Path() if ! $path;
 
+  # Get timestamp of the dir.  Any files older than this will override this as the starttime
+  my $starttime = (stat($path))[9];
+
   if ( !opendir(DIR, $path) ) {
     Error("Can't open directory '$path': $!");
     return;
@@ -768,7 +886,7 @@ sub recover_timestamps {
   Debug('Have ' . @contents . ' files in '.$path);
   closedir(DIR);
 
-  my @mp4_files = grep(/^\d+\-video\.mp4$/, @contents);
+  my @mp4_files = grep(/^\d+\-video\.(?:\w+\.)?mp4$/, @contents);
   if ( @mp4_files ) {
     $$Event{DefaultVideo} = $mp4_files[0];
   }
@@ -794,15 +912,15 @@ sub recover_timestamps {
 
     my $duration = $last_timestamp - $first_timestamp;
     $Event->Length($duration);
-    $Event->StartTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $first_timestamp) );
+    $Event->StartDateTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $first_timestamp) );
     if ( $Event->Scheme() eq 'Deep' and $Event->RelativePath(undef) and ($path ne $Event->Path(undef)) ) {
       my ( $year, $month, $day, $hour, $minute, $second ) =
       ($path =~ /(\d{2})\/(\d{2})\/(\d{2})\/(\d{2})\/(\d{2})\/(\d{2})$/);
       Error("Updating starttime to $path $year/$month/$day $hour:$minute:$second");
-      $Event->StartTime(sprintf('%.4d-%.2d-%.2d %.2d:%.2d:%.2d', 2000+$year, $month, $day, $hour, $minute, $second));
+      $Event->StartDateTime(sprintf('%.4d-%.2d-%.2d %.2d:%.2d:%.2d', 2000+$year, $month, $day, $hour, $minute, $second));
     }
-    $Event->EndTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $last_timestamp) );
-    Debug("From capture Jpegs have duration $duration = $last_timestamp - $first_timestamp : $$Event{StartTime} to $$Event{EndTime}");
+    $Event->EndDateTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $last_timestamp) );
+    Debug("From capture Jpegs have duration $duration = $last_timestamp - $first_timestamp : $$Event{StartDateTime} to $$Event{EndDateTime}");
     $ZoneMinder::Database::dbh->begin_work();
     foreach my $jpg ( @capture_jpgs ) {
       my ( $id ) = $jpg =~ /^(\d+)\-capture\.jpg$/;
@@ -811,40 +929,98 @@ sub recover_timestamps {
         my $file = $path.'/'.$jpg;
         ( $file ) = $file =~ /^(.*)$/;
         my $timestamp = (stat($file))[9];
-        my $Frame = new ZoneMinder::Frame();
-        $Frame->save({
+        my $Frame = new ZoneMinder::Frame(\@ZoneMinder::Frame::identified_by, {
             EventId=>$$Event{Id}, FrameId=>$id,
             TimeStamp=>Date::Format::time2str('%Y-%m-%d %H:%M:%S',$timestamp),
             Delta => $timestamp - $first_timestamp,
             Type=>'Normal',
             Score=>0,
           });
+        $Frame->save();
       } # end if Frame not found
     } # end foreach capture jpg
     $ZoneMinder::Database::dbh->commit();
   } elsif ( @mp4_files ) {
+    # No capture jpgs (e.g. an mp4 plus a snapshot.jpg). Probe the video for
+    # its duration. Length is NOT NULL in the db, so we must always set it.
     my $file = $path.'/'.$mp4_files[0];
-    ( $file ) = $file =~ /^(.*)$/;
+    ( $file ) = $file =~ /^(.*)$/; # de-taint
 
-    my $first_timestamp = (stat($file))[9];
-    my $output = `ffprobe $file 2>&1`;
-    my ($duration) = $output =~ /Duration: [:\.0-9]+/gm;
-    Debug("From mp4 have duration $duration, start: $first_timestamp");
+    my $seconds = mp4_duration($file);
+    if ( !defined $seconds ) {
+      Warning("Unable to determine duration of $file from ffprobe. Defaulting Length to 0.");
+      $seconds = 0;
+    }
+    # The mp4 is written as the event records, so its mtime is when recording
+    # finished. The event therefore started $seconds before that.
+    my $last_timestamp = (stat($file))[9];
+    my $first_timestamp = $last_timestamp - $seconds;
+    Debug("From mp4 have duration $seconds seconds, start: $first_timestamp end: $last_timestamp");
 
-    my ( $h, $m, $s, $u );
-      if ( $duration =~ m/(\d+):(\d+):(\d+)\.(\d+)/ ) {
-        ( $h, $m, $s, $u ) = ($1, $2, $3, $4 );
-        Debug("( $h, $m, $s, $u ) from /^(\\d{2}):(\\d{2}):(\\d{2})\.(\\d+)/");
-      }
-    my $seconds = ($h*60*60)+($m*60)+$s;
-    $Event->Length($seconds.'.'.$u);
-    $Event->StartTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $first_timestamp) );
-    $Event->EndTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $first_timestamp+$seconds) );
+    $Event->Length(sprintf('%.2f', $seconds));
+    $Event->StartDateTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $first_timestamp) );
+    $Event->EndDateTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $last_timestamp) );
+  } else {
+    # Nothing to derive the times from, so fall back to the directory's mtime.
+    $Event->StartDateTime( Date::Format::time2str('%Y-%m-%d %H:%M:%S', $starttime) );
   }
   if ( @mp4_files ) {
     $Event->DefaultVideo($mp4_files[0]);
   }
 }
+
+# Return the duration of a video file in seconds (float), or undef if it
+# cannot be determined. $file must already be de-tainted by the caller.
+sub mp4_duration {
+  my $file = shift;
+
+  # Preferred: ask ffprobe for the machine-readable duration in seconds.
+  my $duration = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 '$file' 2>/dev/null`;
+  chomp $duration if defined $duration;
+  if ( defined $duration and $duration =~ /^(\d+(?:\.\d+)?)$/ ) {
+    return $1;
+  }
+
+  # Fallback: parse the human-readable "Duration: HH:MM:SS.uu" line.
+  my $output = `ffprobe '$file' 2>&1`;
+  if ( $output =~ /Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/ ) {
+    return ($1*3600) + ($2*60) + $3 + "0.$4";
+  }
+
+  return undef;
+} # end sub mp4_duration
+
+sub guess_EndDateTime {
+  my $event = shift;
+  if (!$$event{EndDateTime}) {
+    if ($$event{Length}) {
+      my $startdatetime = Date::Parse::str2time( $_[0]{StartDateTime} );
+      $$event{EndDateTime} = Date::Format::time2str('%Y-%m-%d %H:%M:%S', $startdatetime + $$event{Length});
+    } else {
+      $$event{EndDateTime} = Date::Format::time2str('%Y-%m-%d %H:%M:%S', Date::Parse::str2time( $_[0]{StartDateTime} )+1);
+    }
+  }
+  return $$event{EndDateTime};
+}
+
+sub fix_DefaultVideo {
+  my $event = shift;
+  if (!$$event{DefaultVideo} or $$event{DefaultVideo} eq 'incomplete.mp4' or ! -e $event->Path().'/'.$$event{DefaultVideo}) {
+    my $path = $event->Path();
+    if ( !opendir(DIR, $path) ) {
+      Error("Can't open directory '$path': $!");
+      return;
+    }
+    my @contents = readdir(DIR);
+    Debug('Have ' . @contents . ' files in '.$path);
+    closedir(DIR);
+
+    my @mp4_files = grep(/^\d+\-video\.(?:\w+\.)?mp4$/, @contents);
+    if ( @mp4_files ) {
+      $$event{DefaultVideo} = $mp4_files[0];
+    }
+  }
+} # end sub fix_DefaultVideo
 
 sub files {
 	my $self = shift;
@@ -863,14 +1039,159 @@ sub files {
 
 sub has_capture_jpegs {
 	@{$_[0]{capture_jpegs}} = grep(/^\d+\-capture\.jpg$/, $_[0]->files());
-	Debug("have " . @{$_[0]{capture_jpegs}} . " capture jpegs");
+	Debug('have ' . @{$_[0]{capture_jpegs}} . ' capture jpegs');
 	return @{$_[0]{capture_jpegs}} ? 1 : 0;
 }
 
 sub has_analyse_jpegs {
 	@{$_[0]{analyse_jpegs}} = grep(/^\d+\-analyse\.jpg$/, $_[0]->files());
-	Debug("have " . @{$_[0]{analyse_jpegs}} . " analyse jpegs");
+	Debug('have ' . @{$_[0]{analyse_jpegs}} . ' analyse jpegs');
 	return @{$_[0]{analyse_jpegs}} ? 1 : 0;
+}
+
+sub canEdit {
+  my $self = shift;
+  if ( !$ZoneMinder::user ) {
+    # No user loaded... assume running as system
+    return 1;
+  }
+  if ( !$$ZoneMinder::user{MonitorIds} ) {
+    # User has no monitor limitations
+    return 1;
+  }
+  if ( $$ZoneMinder::user{Events} eq 'Edit' ) {
+    return 1; 
+  }
+  return 0;
+} # end sub canEdit
+
+sub Monitor {
+  my $self = shift;
+  $$self{Monitor} = shift if @_;
+  if ( !$$self{Monitor} ) {
+    $$self{Monitor} = new ZoneMinder::Monitor($$self{MonitorId});
+  }
+  return $$self{Monitor};
+}
+
+sub Close {
+  my $self = shift;
+  my $tag = @_ ? shift : '(r)';
+  my $text = @_ ? shift : 'Recovered.';
+
+  my $FrameDataSql = '
+SELECT
+  max(`TimeStamp`) AS `EndDateTime`,
+  unix_timestamp(max(`TimeStamp`)) AS `EndTimeStamp`,
+  max(`FrameId`) AS `Frames`,
+  count(if(`Score`>0,1,NULL)) AS `AlarmFrames`,
+  sum(`Score`) AS `TotScore`,
+  max(`Score`) AS `MaxScore`
+FROM `Frames` WHERE `EventId`=?';
+  my $frame = ZoneMinder::Database::zmDbFetchOne($FrameDataSql, $self->{Id});
+  if (!$frame) {
+    return 'Unable to retrieve frame data.';
+  }
+  if (!$frame->{EndDateTime}) {
+    return 'Unable to retrieve EndDateTime from Frames Table.';
+  }
+  return $self->save({
+      Name => sprintf('%s%d%s', $self->Monitor()->EventPrefix(), $self->{Id}, $tag),
+      EndDateTime => $frame->{EndDateTime},
+      Length => $frame->{EndTimeStamp} - $self->Time(),
+      Frames => $frame->{Frames},
+      AlarmFrames => $frame->{AlarmFrames},
+      TotScore => $frame->{TotScore},
+      AvgScore => ($frame->{AlarmFrames} ? int($frame->{TotScore} / $frame->{AlarmFrames}) : 0),
+      MaxScore => $frame->{MaxScore},
+      Notes => $self->Notes() . ' ' . $text,
+    });
+} # end sub Close
+
+sub Event_Tags {
+  my $self = shift;
+  $$self{Event_Tags} = shift if @_;
+  if (!$$self{Event_Tags}) {
+    $$self{Event_Tags} = [ ZoneMinder::Event_Tag->find(EventId=>$$self{Id}) ];
+  }
+  return wantarray ? @{$$self{Event_Tags}} : $$self{Event_Tags};
+}
+
+sub Tags {
+  my $self = shift;
+  $$self{Tags} = shift if @_;
+
+  if (!$$self{Tags}) {
+    $$self{Tags} = [ map { $_->Tag() } $self->Event_Tags() ];
+  }
+  return wantarray ? @{$$self{Tags}} : $$self{Tags};
+}
+
+sub tags {
+  my $self = shift;
+  my @tags = map { $_->Name() } $self->Tags();
+  return wantarray ? @tags : \@tags;
+}
+
+# ==========================================================================
+#
+# Advisory locks over events (the Events_Lock table)
+#
+# Used by filters with LockRows set so that two of them do not work on the same
+# event at once.  Deliberately not a row lock: acquiring is one autocommitted
+# INSERT touching one row of Events_Lock, and nothing is held while the event is
+# actually worked on.  Locking the filter's result set with SELECT ... FOR
+# UPDATE instead accumulates every lock the batch goes on to take - Events, the
+# bucket tables, Event_Summaries, Storage - until it commits, which deadlocks
+# two filters against each other and stalls zmc, which cannot open a new event
+# on a monitor whose Event_Summaries row is being held.
+#
+# Because the lock lives in a table rather than in the session, the filter's
+# selection query can exclude events other filters hold (see
+# ZoneMinder::Filter::Sql), so a filter's LIMIT fills with events it can
+# actually work on instead of being used up by events it will skip.
+#
+# The flip side is that a killed process cannot release what it held, so locks
+# expire after ZM_FILTER_LOCK_TIMEOUT.
+#
+# ==========================================================================
+
+sub lock_owner {
+  return ($Config{ZM_SERVER_ID} ? $Config{ZM_SERVER_ID} : 0).'.'.$$;
+}
+
+# Returns 1 if we now hold the lock on this event, 0 if another process does.
+sub acquire_lock {
+  my $self = shift;
+  my $timeout = shift;
+  $timeout = ($Config{ZM_FILTER_LOCK_TIMEOUT} || 3600) if !defined $timeout;
+
+  # Clear an expired lock first so the INSERT below can take it.  Two separate
+  # autocommitted statements on purpose, each touching one row and holding
+  # nothing afterwards.  If another process gets in between them, our INSERT
+  # IGNORE reports no rows and we leave the event alone - which is the safe
+  # direction.
+  zmDbDo('DELETE FROM Events_Lock WHERE EventId=? AND ExpiresAt<NOW()', $$self{Id});
+
+  my $rows = zmDbDo(
+    'INSERT IGNORE INTO Events_Lock (EventId,LockedBy,LockedAt,ExpiresAt) VALUES (?,?,NOW(),NOW() + INTERVAL ? SECOND)',
+    $$self{Id}, lock_owner(), $timeout);
+
+  # DBI reports 0E0 rather than 0 for a statement that affected nothing, and it
+  # numifies to 0, so this distinguishes "inserted" from "already locked".
+  return (defined $rows and $rows > 0) ? 1 : 0;
+}
+
+sub release_lock {
+  my $self = shift;
+  return zmDbDo('DELETE FROM Events_Lock WHERE EventId=? AND LockedBy=?',
+    $$self{Id}, lock_owner());
+}
+
+# Drop locks whose holder went away without releasing them, so the table does
+# not accumulate rows.  Covered by the ExpiresAt index.
+sub reap_expired_locks {
+  return zmDbDo('DELETE FROM Events_Lock WHERE ExpiresAt<NOW()');
 }
 
 1;
@@ -896,9 +1217,8 @@ Isaac Connor, E<lt>isaac@zoneminder.comE<gt>
 
 Copyright (C) 2001-2017  ZoneMinder LLC
 
-This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.3 or,
-at your option, any later version of Perl 5 you may have available.
+Licensed under the GNU General Public License v2 or later; see the COPYING
+file distributed with ZoneMinder for the full text.
 
 
 =cut

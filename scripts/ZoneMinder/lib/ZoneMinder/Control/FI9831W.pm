@@ -30,7 +30,7 @@
 # This module FI8620_Y2k.pm contains the implementation of API camera control
 # For FOSCAM FI8620 Dome PTZ Camera (This cam support only H264 streaming)
 # V1.0  Le 09 AOUT 2013 - production usable for the script but not for the camera "reboot itself"
-# If you wan't to contact me i understand French and English, precise ZoneMinder in subject
+# If you want to contact me i understand French and English, precise ZoneMinder in subject
 # My name is Christophe DAPREMONT my email is christophe_y2k@yahoo.fr
 #
 # =========================================================================================
@@ -43,8 +43,13 @@ use warnings;
 
 require ZoneMinder::Base;
 require ZoneMinder::Control;
+require ZoneMinder::Control::FoscamHD;
 
-our @ISA = qw(ZoneMinder::Control);
+# FoscamHD is itself a ZoneMinder::Control.  It adds get_config, set_config and
+# set_time for the CGIProxy.fcgi settings API this camera shares with the rest
+# of the HD Foscams, and leaves the PTZ below alone.
+our @ISA = qw(ZoneMinder::Control::FoscamHD);
+
 # ===================================================================================================================================
 #
 # FI9821 FOSCAM PT H264 Control Protocol
@@ -64,7 +69,7 @@ use ZoneMinder::Logger qw(:all);
 use ZoneMinder::Config qw(:all);
 use Time::HiRes qw( usleep );
 
-# Set $osd to "off" if you wan't disabled OSD i need to place this variable in another script because
+# Set $osd to "off" if you want disabled OSD i need to place this variable in another script because
 # this script is reload at every command ,if i want the button on/off (Focus MAN) for OSD works...
 # PP - changed this to off - it achieves OSD by renaming the Device and what happens is at times
 # it does not reset the name if a command fails. Net result: Your camera gets a name like "Move Left" which
@@ -754,9 +759,8 @@ Philip Coombes, E<lt>philip.coombes@zoneminder.comE<gt>
 
 Copyright (C) 2001-2008  Philip Coombes
 
-This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.3 or,
-at your option, any later version of Perl 5 you may have available.
+Licensed under the GNU General Public License v2 or later; see the COPYING
+file distributed with ZoneMinder for the full text.
 
 
 =cut

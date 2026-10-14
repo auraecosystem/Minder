@@ -20,6 +20,17 @@ class LogsController extends AppController {
 		'paramType' => 'querystring'
 	);
 
+  public function beforeFilter() {
+    parent::beforeFilter();
+    global $user;
+    # We already tested for auth in appController, so we just need to test for specific permission
+    $canView = (!$user) || ($user->System() != 'None');
+    if (!$canView) {
+      throw new UnauthorizedException(__('Insufficient Privileges'));
+      return;
+    }
+  }
+
 /**
  * index method
  *
@@ -54,7 +65,15 @@ class LogsController extends AppController {
  * @return void
  */
 	public function add() {
+    global $user;
+    $canAdd = (!$user) || (($user->System() == 'Edit') || ZM_LOG_INJECT);
+    if (!$canAdd) {
+      throw new UnauthorizedException(__('Insufficient privileges'));
+      return;
+    }
 		if ($this->request->is('post')) {
+			// ZM_LOG_INJECT lets non-admins add entries; never let one overwrite an existing entry.
+			$this->pinRequestId($this->Log, null);
 			$this->Log->create();
 			if ($this->Log->save($this->request->data)) {
 				return $this->flash(__('The log has been saved.'), array('action' => 'index'));
@@ -70,6 +89,13 @@ class LogsController extends AppController {
  * @return void
  */
 	public function edit($id = null) {
+    global $user;
+    $canEdit = (!$user) || ($user->System() == 'Edit');
+    if (!$canEdit) {
+      throw new UnauthorizedException(__('Insufficient privileges'));
+      return;
+    }
+
 		if (!$this->Log->exists($id)) {
 			throw new NotFoundException(__('Invalid log'));
 		}
@@ -91,6 +117,12 @@ class LogsController extends AppController {
  * @return void
  */
 	public function delete($id = null) {
+    global $user;
+    $canDelete = (!$user) || ($user->System() == 'Edit');
+    if (!$canDelete) {
+      throw new UnauthorizedException(__('Insufficient privileges'));
+      return;
+    }
 		$this->Log->id = $id;
 		if (!$this->Log->exists()) {
 			throw new NotFoundException(__('Invalid log'));

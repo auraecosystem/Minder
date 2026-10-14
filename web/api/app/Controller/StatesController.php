@@ -14,7 +14,7 @@ public $components = array('RequestHandler');
 public function beforeFilter() {
   parent::beforeFilter();
   global $user;
-  $canView = (!$user) || ($user['System'] != 'None');
+  $canView = (!$user) || ($user->System() != 'None');
   if ( !$canView ) {
     throw new UnauthorizedException(__('Insufficient Privileges'));
     return;
@@ -47,7 +47,10 @@ public function view($id = null) {
     throw new NotFoundException(__('Invalid state'));
   }
   $options = array('conditions' => array('State.' . $this->State->primaryKey => $id));
-  $this->set('state', $this->State->find('first', $options));
+  $this->set(array(
+    'state' => $this->State->find('first', $options),
+    '_serialize' => array('state')
+  ));
 }
 
 /**
@@ -60,7 +63,7 @@ public function add() {
   if ($this->request->is('post')) {
 
     global $user;
-    $canEdit = (!$user) || ($user['System'] == 'Edit');
+    $canEdit = (!$user) || ($user->System() == 'Edit');
     if ( !$canEdit ) {
       throw new UnauthorizedException(__('Insufficient privileges'));
       return;
@@ -68,8 +71,14 @@ public function add() {
 
     $this->State->create();
     if ($this->State->save($this->request->data)) {
-      return $this->flash(__('The state has been saved.'), array('action' => 'index'));
+      $message = 'Saved';
+    } else {
+      $message = $this->State->validationErrors ? $this->State->validationErrors : 'Error';
     }
+    $this->set(array(
+      'message' => $message,
+      '_serialize' => array('message')
+    ));
   }
 }
 
@@ -86,20 +95,24 @@ public function edit($id = null) {
   }
 
   global $user;
-  $canEdit = (!$user) || ($user['System'] == 'Edit');
+  $canEdit = (!$user) || ($user->System() == 'Edit');
   if ( !$canEdit ) {
     throw new UnauthorizedException(__('Insufficient privileges'));
     return;
   }
 
-  if ( $this->request->is(array('post', 'put')) ) {
-    if ( $this->State->save($this->request->data) ) {
-      return $this->flash(__('The state has been saved.'), array('action' => 'index'));
-    }
+  $this->request->allowMethod('post', 'put');
+  // Without the id, save() inserts a new state instead of updating this one.
+  $this->State->id = $id;
+  if ( $this->State->save($this->request->data) ) {
+    $message = 'Saved';
   } else {
-    $options = array('conditions' => array('State.' . $this->State->primaryKey => $id));
-    $this->request->data = $this->State->find('first', $options);
+    $message = $this->State->validationErrors ? $this->State->validationErrors : 'Error';
   }
+  $this->set(array(
+    'message' => $message,
+    '_serialize' => array('message')
+  ));
 }
 
 /**
@@ -112,7 +125,7 @@ public function edit($id = null) {
 public function delete($id = null) {
   $this->State->id = $id;
   global $user;
-  $canEdit = (!$user) || ($user['System'] == 'Edit');
+  $canEdit = (!$user) || ($user->System() == 'Edit');
   if ( !$canEdit ) {
     throw new UnauthorizedException(__('Insufficient privileges'));
     return;
@@ -131,7 +144,7 @@ public function delete($id = null) {
 
 public function change() {
   global $user;
-  $canEdit = (!$user) || ($user['System'] == 'Edit');
+  $canEdit = (!$user) || ($user->System() == 'Edit');
   if ( !$canEdit ) {
     throw new UnauthorizedException(__('Insufficient privileges'));
     return;

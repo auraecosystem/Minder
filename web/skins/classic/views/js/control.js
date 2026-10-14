@@ -1,43 +1,67 @@
-var controlParms = "view=request&request=control";
-var controlReq = new Request.JSON( {url: thisUrl, method: 'post', timeout: AJAX_TIMEOUT, onSuccess: getControlResponse} );
+var form = $j('#controlForm');
 
-function getControlResponse( respObj, respText ) {
+function controlReq(data) {
+  $j.getJSON(zmAuth.appendTo(monitorUrl + '?view=request&request=control'), data)
+      .done(getControlResponse)
+      .fail(logAjaxFail);
+}
+
+function getControlResponse(respObj, respText) {
   if ( !respObj ) {
     return;
   }
   //console.log( respText );
   if ( respObj.result != 'Ok' ) {
-    alert( "Control response was status = "+respObj.status+"\nmessage = "+respObj.message );
+    alert("Control response was status = "+respObj.status+"\nmessage = "+respObj.message);
   }
 }
 
-function controlCmd( control, event, xtell, ytell ) {
-  var locParms = "&id="+$('mid').get('value');
-  if ( event && (xtell || ytell) ) {
-    var target = event.target;
-    var coords = $(target).getCoordinates();
+// Bound by ptzControls() as data-on-mousedown/mouseup (or data-on-click):
+// the button's value is the command, releasing a continuous move stops it.
+function controlCmd(event) {
+  const button = event.currentTarget || event.target;
+  const control = (event.type == 'mouseup') ? 'moveStop' : button.getAttribute('value');
+  const xtell = button.getAttribute('data-xtell');
+  const ytell = button.getAttribute('data-ytell');
+  const data = {};
 
-    var x = event.pageX - coords.left;
-    var y = event.pageY - coords.top;
+  if (xtell || ytell) {
+    const target = $j(button);
+    const offset = target.offset();
+    const width = target.width();
+    const height = target.height();
 
-    if ( xtell ) {
-      var xge = parseInt( (x*100)/coords.width );
-      if ( xtell == -1 ) {
+    const x = event.pageX - offset.left;
+    const y = event.pageY - offset.top;
+
+    if (xtell) {
+      let xge = parseInt((x*100)/width);
+      if (xtell == -1) {
         xge = 100 - xge;
-      } else if ( xtell == 2 ) {
+      } else if (xtell == 2) {
         xge = 2*(50 - xge);
       }
-      locParms += "&xge="+xge;
+      data.xge = xge;
     }
-    if ( ytell ) {
-      var yge = parseInt( (y*100)/coords.height );
-      if ( ytell == -1 ) {
+    if (ytell) {
+      let yge = parseInt((y*100)/height);
+      if (ytell == -1) {
         yge = 100 - yge;
-      } else if ( ytell == 2 ) {
+      } else if (ytell == 2) {
         yge = 2*(50 - yge);
       }
-      locParms += "&yge="+yge;
+      data.yge = yge;
     }
   }
-  controlReq.send( controlParms+"&control="+control+locParms );
+  data.id = $j('#mid').val();
+  data.control = control;
+  controlReq(data);
 }
+
+function initPage() {
+  $j('#mid').change(function() {
+    form.submit();
+  });
+}
+
+$j(document).ready(initPage);

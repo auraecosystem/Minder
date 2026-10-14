@@ -6,11 +6,17 @@ class HostController extends AppController {
   public $components = array('RequestHandler');
 
   public function daemonCheck($daemon=false, $args=false) {
+    # To try to prevent abuse here, we are only going to allow certain characters in the daemon and args.
+    $count = 0;
+    $safe_daemon = $daemon ? preg_replace('/[^A-Za-z0-9\- \.]/', '', $daemon, -1, $count) : false;
+    if ($count) Error("Invalid characters found in daemon string ($daemon). Potential attack?");
+    $safe_args = $args ? preg_replace('/[^A-Za-z0-9\- \.]/', '', $args, -1, $count) : false;
+    if ($count) Error("Invalid characters found in args string ($args). Potential attack?");
+
     $string = ZM_PATH_BIN.'/zmdc.pl check';
-    if ( $daemon ) {
-      $string .= " $daemon";
-      if ( $args )
-        $string .= " $args";
+    if ($safe_daemon) {
+      $string .= ' '.$safe_daemon;
+      if ($safe_args) $string .= ' '.$safe_args;
     }
     $result = exec($string);
     $result = preg_match('/running/', $result);
@@ -25,19 +31,24 @@ class HostController extends AppController {
   // invocation: https://server/zm/api/host/daemonControl/<daemon>.pl/<command>.json
   // note that this API is only for interaction with a specific
   // daemon. zmdc also allows other functions like logrot/etc
-  public function daemonControl($daemon_name, $command) {
+  public function daemonControl($daemon, $command) {
     global $user;
     if ($command == 'check' || $command == 'status') {
       $permission = 'View';
     } else {
       $permission = 'Edit';
     }
-    $allowed = (!$user) || ($user['System'] == $permission );
+    $allowed = (!$user) || ($user->System() == $permission );
     if ( !$allowed ) {
       throw new UnauthorizedException(__("Insufficient privileges"));
       return;
     }
-    $string = ZM_PATH_BIN."/zmdc.pl $command $daemon_name";
+    # To try to prevent abuse here, we are only going to allow certain characters in the daemon and args.
+    $safe_daemon = preg_replace('/[^A-Za-z0-9\-\.]/', '', $daemon, -1, $count);
+    if ($count) Error("Invalid characters found in daemon string ($daemon). Potential attack?");
+    $safe_command = preg_replace('/[^a-z]/', '', $command, -1, $count);
+    if ($count) Error("Invalid characters found in command string ($command). Potential attack?");
+    $string = ZM_PATH_BIN."/zmdc.pl $safe_command $safe_daemon";
     $result = exec($string);
     $this->set(array(
       'result' => $result,
@@ -46,6 +57,12 @@ class HostController extends AppController {
   }
 
   function getLoad() {
+    # getSysLoadHTML() in the web ui renders nothing without canView('System'),
+    # so the same figure is not handed out here to an account without it.
+    global $user;
+    if ($user and ($user->System() == 'None')) {
+      throw new UnauthorizedException(__('Insufficient Privileges'));
+    }
     $load = sys_getloadavg();
 
     $this->set(array(
@@ -55,6 +72,17 @@ class HostController extends AppController {
   }
 
   function login() {
+    $ver = $this->_getVersion();
+
+    $login_array = [];
+    $login_array['version'] = $ver[0];
+    $login_array['apiversion'] = $ver[1];
+
+    if (!ZM_OPT_USE_AUTH) {
+      $login_array['_serialize'] = array_keys($login_array);
+      $this->set($login_array);
+      return;
+    }
 
     $username = $this->request->query('user') ? $this->request->query('user') : $this->request->data('user');
     if ( !$username )
@@ -69,43 +97,48 @@ class HostController extends AppController {
       throw new UnauthorizedException(__('No identity provided'));
     }
 
-    $ver = $this->_getVersion();
     $cred = [];
-    $cred_depr = [];
 
     if ( $username && $password ) {
-      ZM\Logger::Debug('Username and password provided, generating access and refresh tokens');
-      $cred = $this->_getCredentials(true, '', $username); // generate refresh
+      // Mint the token for the account that actually authenticated, never for
+      // a name taken from the request. beforeFilter() authenticates from
+      // user=/pass= (and zm_authenticate_request() from username=/password=),
+      // while the subject used to be read straight out of `user`. Because the
+      // two were never cross-checked, a caller could authenticate with their
+      // own low-privileged credentials and ask for a token issued to admin.
+      // See GHSA-m77q-66v7-j3fq.
+      global $user;
+      if ( !$user ) {
+        throw new UnauthorizedException(__('Not authenticated'));
+      }
+      ZM\Debug('Username and password provided, generating access and refresh tokens');
+      $cred = $this->_getCredentials(true, '', $user->Username()); // generate refresh
     } else {
-      ZM\Logger::Debug('Only generating access token');
+      ZM\Debug('Only generating access token');
       $cred = $this->_getCredentials(false, $token); // don't generate refresh
     }
+    if ($cred) {
+      $login_array['access_token'] = $cred[0];
+      $login_array['access_token_expires'] = $cred[1];
 
-    $login_array = array (
-      'access_token'          => $cred[0],
-      'access_token_expires'  => $cred[1]
-    );
-
-    if ( $username && $password ) {
-      $login_array['refresh_token'] = $cred[2];
-      $login_array['refresh_token_expires'] = $cred[3];
+      if ( $username && $password ) {
+        $login_array['refresh_token'] = $cred[2];
+        $login_array['refresh_token_expires'] = $cred[3];
+      }
     }
 
     if ( ZM_OPT_USE_LEGACY_API_AUTH ) {
       $cred_depr = $this->_getCredentialsDeprecated();
-      $login_array['credentials'] = $cred_depr[0];
-      $login_array['append_password'] = $cred_depr[1];
+      if ($cred_depr) {
+        $login_array['credentials'] = $cred_depr[0];
+        $login_array['append_password'] = $cred_depr[1];
+      }
     } else {
-      ZM\Logger::Debug('Legacy Auth is disabled, not generating auth= credentials');
+      ZM\Debug('Legacy Auth is disabled, not generating auth= credentials');
     }
 
-    $login_array['version'] = $ver[0];
-    $login_array['apiversion'] = $ver[1];
-
     $login_array['_serialize'] = array_keys($login_array);
-
     $this->set($login_array);
-
   } // end function login()
 
   // clears out session
@@ -130,31 +163,29 @@ class HostController extends AppController {
         $credentials = 'user='.$_SESSION['Username'].'&pass=';
         $appendPassword = 1;
       }
-      return array($credentials, $appendPassword);
     }
+    return array($credentials, $appendPassword);
   }
 
   private function _getCredentials($generate_refresh_token=false, $token='', $username='') {
-
-    if ( !ZM_OPT_USE_AUTH ) {
-      ZM\Error('OPT_USE_AUTH is turned off. Tokens will be null');
+    if (!ZM_OPT_USE_AUTH) {
+      ZM\Debug('OPT_USE_AUTH is turned off. Tokens will be null');
       return;
     }
-      
-
-    if ( !ZM_AUTH_HASH_SECRET )
-      throw new ForbiddenException(__('Please create a valid AUTH_HASH_SECRET in ZoneMinder'));
 
     require_once __DIR__ .'/../../../includes/auth.php';
+    if (!authHashSecretIsSet())
+      throw new ForbiddenException(__('Please create a valid AUTH_HASH_SECRET in ZoneMinder'));
+
     require_once __DIR__.'/../../../vendor/autoload.php';
 
-    if ( $token ) {
+    if ($token) {
       // If we have a token, we need to derive username from there
       $ret = validateToken($token, 'refresh', true);
-      $username = $ret[0]['Username'];
+      $username = $ret[0]->Username();
     }
 
-    ZM\Info("Creating token for \"$username\"");
+    ZM\Debug("Creating token for \"$username\"");
 
     /* we won't support AUTH_HASH_IPS in token mode
       reasons:
@@ -167,12 +198,11 @@ class HostController extends AppController {
     }*/
 
     $access_issued_at = time();
-    $access_ttl = max(ZM_AUTH_HASH_TTL,1) * 3600;
+    $access_ttl = max(ZM_AUTH_HASH_TTL, 1) * 3600;
 
     // by default access token will expire in 2 hrs
-    // you can change it by changing the value of ZM_AUTH_HASH_TLL
+    // you can change it by changing the value of ZM_AUTH_HASH_TTL
     $access_expire_at     = $access_issued_at + $access_ttl;
-    //$access_expire_at = $access_issued_at + 60; // TEST, REMOVE
 
     $access_token = array(
         'iss' => 'ZoneMinder',
@@ -187,7 +217,7 @@ class HostController extends AppController {
     $jwt_refresh_token = '';
     $refresh_ttl = 0;
 
-    if ( $generate_refresh_token ) {
+    if ($generate_refresh_token) {
       $refresh_issued_at = time();
       $refresh_ttl = 24 * 3600; // 1 day
 
@@ -215,6 +245,17 @@ class HostController extends AppController {
     if ( $mid and !$this->Monitor->exists($mid) ) {
       throw new NotFoundException(__('Invalid monitor'));
     }
+    require_once __DIR__ .'/../../../includes/Monitor.php';
+    # Usage is reported per monitor, keyed by monitor name, so an account that
+    # cannot view a monitor was being told that it exists and how much disk it
+    # uses. Report only on the monitors it may see.
+    if ($mid) {
+      $one = $this->Monitor->find('first', array('conditions' => array('Id' => $mid)));
+      $zm_monitor = new ZM\Monitor($one['Monitor']);
+      if (!$zm_monitor->canView()) {
+        throw new UnauthorizedException(__('Insufficient Privileges'));
+      }
+    }
 
     $zm_dir_events = ZM_DIR_EVENTS;
 
@@ -227,8 +268,8 @@ class HostController extends AppController {
 
     if ( $mid ) {
       // Get disk usage for $mid
-      ZM\Logger::Debug("Executing du -s0 $zm_dir_events/$mid | awk '{print $1}'");
-      $usage = shell_exec("du -s0 $zm_dir_events/$mid | awk '{print $1}'");
+      ZM\Debug("Executing du -s0 $zm_dir_events/$mid | awk '{print \$1}'");
+      $usage = shell_exec("du -s0 ".escapeshellarg($zm_dir_events.'/'.$mid)." | awk '{print \$1}'");
     } else {
       $monitors = $this->Monitor->find('all', array(
         'fields' => array('Id', 'Name', 'WebColour')
@@ -237,6 +278,8 @@ class HostController extends AppController {
 
       // Add each monitor's usage to array
       foreach ($monitors as $key => $value) {
+        $zm_monitor = new ZM\Monitor($value['Monitor']);
+        if (!$zm_monitor->canView()) continue;
         $id = $value['Monitor']['Id'];
         $name = $value['Monitor']['Name'];
         $color = $value['Monitor']['WebColour'];

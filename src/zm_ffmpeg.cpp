@@ -1,73 +1,564 @@
 /*
  * ZoneMinder FFMPEG implementation, $Date$, $Revision$
  * Copyright (C) 2001-2008 Philip Coombes
- * 
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version 2
  * of the License, or (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-*/ 
-#include <cinttypes>
+*/
 
 #include "zm_ffmpeg.h"
-#include "zm_image.h"
+
+#include "zm_logger.h"
+#include "zm_pixformat.h"
 #include "zm_rgb.h"
+#include "zm_utils.h"
+
 extern "C" {
-#include "libavutil/pixdesc.h"
+#include <libavutil/pixdesc.h>
 }
 
-#if HAVE_LIBAVCODEC || HAVE_LIBAVUTIL || HAVE_LIBSWSCALE
+/*
+      AVCodecID codec_id;
+      const char *codec_codec;
+      const char *codec_name;
+      enum AVPixelFormat sw_pix_fmt;
+      enum AVPixelFormat hw_pix_fmt;
+      AVHWDeviceType hwdevice_type;
+      const char *hwdevice_default
+      const char *options_default
+      */
+
+static CodecData dec_codecs[] = {
+  { AV_CODEC_ID_AV1, "av1", "libsvtav1", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_AV1, "av1", "libaom-av1", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_MJPEG, "mjpeg", "mjpeg", AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ422P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264_v4l2m2m", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "hevc", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "hevc_v4l2m2m", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "hevc_cuvid", AV_PIX_FMT_YUV420P, AV_PIX_FMT_NV12, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264_cuvid", AV_PIX_FMT_YUV420P, AV_PIX_FMT_NV12, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "libx265", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_MPEG4, "mpeg4", "mpeg4", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+#if HAVE_LIBAVUTIL_HWCONTEXT_H && LIBAVCODEC_VERSION_CHECK(57, 107, 0, 107, 0)
+  { AV_CODEC_ID_H264, "h264", "h264_qsv", AV_PIX_FMT_YUV420P, AV_PIX_FMT_QSV, AV_HWDEVICE_TYPE_QSV, nullptr, nullptr },
+  { AV_CODEC_ID_AV1, "av1", "av1_vaapi", AV_PIX_FMT_YUV420P, AV_PIX_FMT_VAAPI, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "hevc_vaapi", AV_PIX_FMT_YUV420P, AV_PIX_FMT_VAAPI, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "hevc_qsv", AV_PIX_FMT_YUV420P, AV_PIX_FMT_QSV, AV_HWDEVICE_TYPE_QSV, nullptr, nullptr },
+#endif
+};
+
+static CodecData enc_codecs[] = {
+#if HAVE_LIBAVUTIL_HWCONTEXT_H && LIBAVCODEC_VERSION_CHECK(57, 107, 0, 107, 0)
+  { AV_CODEC_ID_H265, "hevc", "hevc_vaapi", AV_PIX_FMT_NV12, AV_PIX_FMT_VAAPI, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "hevc_qsv", AV_PIX_FMT_YUV420P, AV_PIX_FMT_QSV, AV_HWDEVICE_TYPE_QSV, nullptr, nullptr },
+  { AV_CODEC_ID_H265, "hevc", "hevc_nvenc", AV_PIX_FMT_NV12, AV_PIX_FMT_NV12, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264_vaapi", AV_PIX_FMT_NV12, AV_PIX_FMT_VAAPI, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264_qsv", AV_PIX_FMT_YUV420P, AV_PIX_FMT_QSV, AV_HWDEVICE_TYPE_QSV, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264_nvenc", AV_PIX_FMT_NV12, AV_PIX_FMT_NV12, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264_omx", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P,  AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264_v4l2m2m", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P,  AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_AV1, "av1", "av1_qsv", AV_PIX_FMT_YUV420P, AV_PIX_FMT_QSV, AV_HWDEVICE_TYPE_QSV, nullptr, nullptr },
+  { AV_CODEC_ID_AV1, "av1", "av1_vaapi", AV_PIX_FMT_YUV420P, AV_PIX_FMT_VAAPI, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr },
+#endif
+  { AV_CODEC_ID_H265, "hevc", "libx265", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "h264", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_H264, "h264", "libx264", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_MJPEG, "mjpeg", "mjpeg", AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_VP9, "vp9", "libvpx-vp9", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_AV1, "av1", "libsvtav1", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+  { AV_CODEC_ID_AV1, "av1", "libaom-av1", AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P, AV_HWDEVICE_TYPE_NONE, nullptr, nullptr },
+};
+
+std::list<const CodecData*> get_encoder_data(const std::string &wanted_codec, const std::string &wanted_encoder) {
+  std::list<const CodecData*> results;
+
+  for (unsigned int i = 0; i < sizeof(enc_codecs) / sizeof(*enc_codecs); i++) {
+    const CodecData *chosen_codec_data = &enc_codecs[i];
+    if (wanted_encoder != "" and wanted_encoder != "auto") {
+      if (wanted_encoder != enc_codecs[i].codec_name) {
+        Debug(1, "Not the right codec name %s != %s", enc_codecs[i].codec_name, wanted_encoder.c_str());
+        continue;
+      } else {
+        Debug(1, "Have the right codec name %s == %s", enc_codecs[i].codec_name, wanted_encoder.c_str());
+      }
+    }
+    if ((!wanted_codec.empty() and (wanted_codec != "auto")) and (enc_codecs[i].codec_codec != wanted_codec)) {
+      Debug(1, "Not the right codec id %s != %s for %s",
+          chosen_codec_data->codec_codec,
+          wanted_codec.c_str(),
+          chosen_codec_data->codec_name
+          );
+      continue;
+    } else {
+      Debug(1, "Have the right codec id %s == %s for %s",
+          chosen_codec_data->codec_codec,
+          wanted_codec.c_str(),
+          chosen_codec_data->codec_name
+          );
+    }
+    const AVCodec *codec = avcodec_find_encoder_by_name(chosen_codec_data->codec_name);
+    if (!codec) {
+      Debug(1, "Didn't find codec for %s", chosen_codec_data->codec_name);
+      continue;
+    }
+    results.push_back(chosen_codec_data);
+  }
+  return results;
+}
+
+std::list<const CodecData*> get_decoder_data(int wanted_codec, const std::string &wanted_decoder) {
+  std::list<const CodecData*> results;
+
+  for (unsigned int i = 0; i < sizeof(dec_codecs) / sizeof(*dec_codecs); i++) {
+    const CodecData *chosen_codec_data = &dec_codecs[i];
+    if (!wanted_decoder.empty() and wanted_decoder != "auto") {
+      if (wanted_decoder != chosen_codec_data->codec_name) {
+        Debug(1, "Not the right codec name %s != %s", chosen_codec_data->codec_name, wanted_decoder.c_str());
+        continue;
+      }
+    }
+    if (wanted_codec and (chosen_codec_data->codec_id != wanted_codec)) {
+      Debug(1, "Not the right codec id %d %s != wanted %d %s for %s",
+          chosen_codec_data->codec_id,
+          avcodec_get_name(chosen_codec_data->codec_id),
+          wanted_codec,
+          avcodec_get_name((AVCodecID)wanted_codec),
+          chosen_codec_data->codec_name
+          );
+      continue;
+    }
+    const AVCodec *codec = avcodec_find_decoder_by_name(chosen_codec_data->codec_name);
+    if (!codec) {
+      Debug(1, "Didn't find codec for %s", chosen_codec_data->codec_name);
+      continue;
+    }
+    results.push_back(chosen_codec_data);
+  }
+  return results;
+}
+
+AVCodecContext *open_fallback_decoder(const AVCodecParameters *codecpar, const AVCodec **codec_out) {
+  const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
+  if (!codec) {
+    Debug(1, "No fallback decoder available for codec %s",
+        avcodec_get_name(codecpar->codec_id));
+    return nullptr;
+  }
+  Debug(1, "Trying fallback decoder %s for codec %s",
+      codec->name, avcodec_get_name(codecpar->codec_id));
+  AVCodecContext *ctx = avcodec_alloc_context3(codec);
+  if (!ctx) {
+    Error("Failed to allocate context for fallback decoder %s", codec->name);
+    return nullptr;
+  }
+  avcodec_parameters_to_context(ctx, codecpar);
+  zm_dump_codec(ctx);
+  int ret = avcodec_open2(ctx, codec, nullptr);
+  if (ret < 0) {
+    Error("Could not open fallback decoder %s (error '%s')",
+        codec->name, av_make_error_string(ret).c_str());
+    avcodec_free_context(&ctx);
+    return nullptr;
+  }
+  if (codec_out) *codec_out = codec;
+  return ctx;
+}
+
+#if HAVE_LIBAVUTIL_HWCONTEXT_H
+#if LIBAVCODEC_VERSION_CHECK(57, 89, 0, 89, 0)
+
+// Callback to select hardware pixel format.
+// ctx->opaque must point to an AVPixelFormat containing the desired hw format.
+AVCodecContext *open_video_decoder(
+    AVStream *stream,
+    const std::string &decoder_name,
+    const std::string &hwaccel_name,
+    const std::string &hwaccel_device,
+    const std::string &options,
+    const std::string &label,
+    AVPixelFormat &hw_pix_fmt,
+    AVBufferRef *&hw_device_ctx) {
+  const AVCodec *codec = nullptr;
+  AVCodecContext *ctx = nullptr;
+  // Was a camera member, but only ever read at the gate below and cleared
+  // when a candidate's hwaccel fails, so the next codec attempt does not
+  // retry it. Nothing outside the open read it.
+  bool use_hwaccel = true;
+  AVDictionary *opts = nullptr;
+  int ret = 0;
+  std::list<const CodecData *>codec_data = get_decoder_data(stream->codecpar->codec_id, decoder_name.c_str());
+  if (codec_data.size() == 0 and (!decoder_name.empty() and (decoder_name != "auto"))) {
+    Warning("No decoder for codec %d found with name %s. Trying auto.", stream->codecpar->codec_id, decoder_name.c_str());
+    codec_data = get_decoder_data(stream->codecpar->codec_id, "auto");
+  }
+
+  for (auto it = codec_data.begin(); it != codec_data.end(); it ++) {
+    const CodecData *chosen_codec_data = *it;
+    Debug(1, "Found codec %s", chosen_codec_data->codec_name);
+
+    codec = avcodec_find_decoder_by_name(chosen_codec_data->codec_name);
+
+    if (!codec) {
+      codec = avcodec_find_decoder(stream->codecpar->codec_id);
+      if (!codec) {
+        // Try and get the codec from the codec context
+        Error("Can't find codec for video stream from %s", label.c_str());
+        continue;
+      }
+    }
+
+    ctx = avcodec_alloc_context3(codec);
+    avcodec_parameters_to_context(ctx, stream->codecpar);
+    ctx->framerate = stream->r_frame_rate;
+    ctx->sw_pix_fmt = chosen_codec_data->sw_pix_fmt;
+
+    // libavcodec defaults thread_count to 1, making software 1080p H.264
+    // decode hit ~60ms/frame and saturate a core per camera.  Default to 2
+    // frame-threads instead.  User can override (including 0 = auto) via
+    // thread_count in monitor Options.
+    ctx->thread_count = 2;
+    ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+
+    // Set default options for this codec
+    if (chosen_codec_data->options_defaults) {
+      AVDictionary *opts_defaults = nullptr;
+      av_dict_parse_string(&opts_defaults, chosen_codec_data->options_defaults, "=", ",", 0);
+      AVDictionaryEntry *e = nullptr;
+      while ((e = av_dict_get(opts_defaults, "", e, AV_DICT_IGNORE_SUFFIX)) != nullptr) {
+        const AVDictionaryEntry *entry = av_dict_get(opts, e->key, nullptr, AV_DICT_MATCH_CASE);
+        if (!entry) {
+          int ret;
+          if ((ret = av_dict_set(&opts, e->key, e->value, 0)) < 0) {
+            Error("Couldn't set default Option %s set to %s", e->key, e->value);
+          }
+          Debug(1, "Option %s set to %s from default", e->key, e->value);
+        }
+      }
+      av_dict_free(&opts_defaults);
+    }
+
+    //Set user-specified options, which may override codec defaults
+    if (!options.empty()) {
+      av_dict_parse_string(&opts, options.c_str(), "=", kOptionSeparators, 0);
+      const AVDictionaryEntry *entry = av_dict_get(opts, "thread_count", nullptr, AV_DICT_MATCH_CASE);
+      if (entry) {
+        ctx->thread_count = std::stoul(entry->value);
+        Debug(1, "Setting codec thread_count to %d", ctx->thread_count);
+        av_dict_set(&opts, "thread_count", nullptr, AV_DICT_MATCH_CASE);
+      }
+      // reorder_queparse for avforpts, mOpcodec
+      av_dict_set(&opts, "reorder_queue_size", nullptr, AV_DICT_MATCH_CASE);
+      av_dict_set(&opts, "probesize", nullptr, AV_DICT_MATCH_CASE);
+      // loop / realtime (re) are consumed by FfmpegCamera, not the decoder;
+      // strip them so avcodec_open2 doesn't report them as unrecognized.
+      av_dict_set(&opts, "loop", nullptr, AV_DICT_MATCH_CASE);
+      av_dict_set(&opts, "realtime", nullptr, AV_DICT_MATCH_CASE);
+      av_dict_set(&opts, "re", nullptr, AV_DICT_MATCH_CASE);
+    }
+
+    if (use_hwaccel && (hwaccel_name != "")) {
+#if HAVE_LIBAVUTIL_HWCONTEXT_H
+      // 3.2 doesn't seem to have all the bits in place, so let's require 3.4 and up
+#if LIBAVCODEC_VERSION_CHECK(57, 107, 0, 107, 0)
+      // Build the list of hw device types to try. A DecoderHWAccelName of
+      // "auto" probes every hwaccel libav offers and uses the first that both
+      // the decoder supports and whose device can be created; any other value
+      // is a comma-separated priority list of device-type names, tried in
+      // order (e.g. "cuda,vaapi"; a single name like "vaapi" is just the
+      // one-element case and behaves as before). If nothing usable is found
+      // we transparently fall back to software.
+      const bool auto_detect = (hwaccel_name == "auto");
+      const std::vector<enum AVHWDeviceType> candidate_types =
+          hwaccel_candidate_types(hwaccel_name);
+
+      for (enum AVHWDeviceType type : candidate_types) {
+        Debug(1, "Trying hwdevice %s", av_hwdevice_get_type_name(type));
+        hw_pix_fmt = AV_PIX_FMT_NONE;
+#if LIBAVUTIL_VERSION_CHECK(56, 22, 0, 14, 0)
+        // Does this decoder advertise a hw config for this device type?
+        for (int i = 0;; i++) {
+          const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+          if (!config) break;
+          if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)
+              && (config->device_type == type)) {
+            hw_pix_fmt = config->pix_fmt;
+            Debug(1, "Decoder %s supports type %s (pix_fmt %s).",
+                codec->name, av_hwdevice_get_type_name(type),
+                zm_get_pix_fmt_name(hw_pix_fmt));
+          }
+        }  // end foreach hwconfig
+#else
+        hw_pix_fmt = find_fmt_by_hw_type(type);
+#endif
+        if (hw_pix_fmt == AV_PIX_FMT_NONE) {
+          Debug(1, "Decoder %s has no hw_pix_fmt for %s, skipping.",
+              codec->name, av_hwdevice_get_type_name(type));
+          continue;
+        }
+
+        ret = av_hwdevice_ctx_create(&hw_device_ctx, type,
+            (hwaccel_device != "" ? hwaccel_device.c_str() : nullptr), nullptr, 0);
+        if (ret < 0 and hwaccel_device != "")
+          ret = av_hwdevice_ctx_create(&hw_device_ctx, type, nullptr, nullptr, 0);
+        if (ret < 0) {
+          Warning("Failed to create %s hwaccel device: %s",
+              av_hwdevice_get_type_name(type), av_make_error_string(ret).c_str());
+          hw_pix_fmt = AV_PIX_FMT_NONE;
+          hw_device_ctx = nullptr;
+          continue;  // try the next candidate
+        }
+
+        // Success: wire up hardware decoding and stop searching.
+        Info("Using %s hardware decoding for %s",
+            av_hwdevice_get_type_name(type), codec->name);
+        ctx->hwaccel_flags |= AV_HWACCEL_FLAG_IGNORE_LEVEL;
+        //if (!lavc_param->check_hw_profile)
+        ctx->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
+        // Set opaque to point to our hw_pix_fmt so callback can access it
+        ctx->opaque = &hw_pix_fmt;
+        ctx->get_format = get_hw_format;
+        ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+        break;
+      }  // end foreach candidate type
+
+      if (hw_pix_fmt == AV_PIX_FMT_NONE) {
+        // "auto" asks us to probe, so finding nothing is unremarkable. But if
+        // the admin named hwaccels explicitly and none of them worked, this
+        // monitor now decodes on the CPU and nothing else will ever say so:
+        // a default install does not log Debug, and we only get here once, at
+        // capture start. That silence hides a dead GPU for as long as nobody
+        // wonders why the load average doubled.
+        if (auto_detect) {
+          Debug(1, "No usable hardware decoder found; falling back to software decoding.");
+        } else {
+          Warning("None of the requested hwaccels (%s) are usable for %s; "
+              "falling back to software decoding.",
+              hwaccel_name.c_str(), codec->name);
+        }
+        use_hwaccel = false;
+      }
+#else
+      Debug(1, "AVCodec not new enough for hwaccel");
+#endif
+#else
+      Warning("HWAccel support not compiled in.");
+#endif
+    }  // end if hwaccel_name
+
+    ret = avcodec_open2(ctx, codec, &opts);
+
+    // Declared here rather than at the top: in the camera this shared a
+    // variable with the input-open above, which is the only reason it was not
+    // local already.
+    AVDictionaryEntry *e = nullptr;
+    while ((e = av_dict_get(opts, "", e, AV_DICT_IGNORE_SUFFIX)) != nullptr) {
+      Warning("Option %s not recognized by ffmpeg", e->key);
+    }
+    av_dict_free(&opts);
+
+    if (ret < 0) {
+      Error("Unable to open codec for video stream from %s", label.c_str());
+      avcodec_free_context(&ctx);
+      ctx = nullptr;
+      continue;
+    }
+    Debug(1, "Thread count? %d", ctx->thread_count);
+    zm_dump_codec(ctx);
+    break;
+  } // end foreach codec
+
+  if (!ctx) {
+    Debug(1, "Failed with known codecs, trying harder");
+    ctx = open_fallback_decoder(stream->codecpar, &codec);
+  }
+  return ctx;
+}
+
+std::vector<enum AVHWDeviceType> hwaccel_candidate_types(const std::string &hwaccel_name) {
+  std::vector<enum AVHWDeviceType> candidates;
+  if (hwaccel_name.empty()) return candidates;
+
+  const bool auto_detect = (hwaccel_name == "auto");
+
+  // Walked even when not auto-detecting: the list of what this build offers is
+  // the first thing wanted when a named hwaccel turns out not to exist.
+  enum AVHWDeviceType available = AV_HWDEVICE_TYPE_NONE;
+  while ((available = av_hwdevice_iterate_types(available)) != AV_HWDEVICE_TYPE_NONE) {
+    Debug(1, "Available hwdevice type %s", av_hwdevice_get_type_name(available));
+    if (auto_detect) candidates.push_back(available);
+  }
+  if (auto_detect) return candidates;
+
+  for (const std::string &token : Split(hwaccel_name, ',')) {
+    const std::string name = TrimSpaces(token);
+    if (name.empty()) continue;
+    const enum AVHWDeviceType named = av_hwdevice_find_type_by_name(name.c_str());
+    if (named == AV_HWDEVICE_TYPE_NONE) {
+      Warning("Unknown hwaccel device type '%s', skipping.", name.c_str());
+    } else {
+      candidates.push_back(named);
+    }
+  }
+  return candidates;
+}
+
+enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+  if (!ctx->opaque) {
+    Error("get_hw_format called with null opaque pointer");
+    return AV_PIX_FMT_NONE;
+  }
+
+  const enum AVPixelFormat hw_pix_fmt = *static_cast<enum AVPixelFormat*>(ctx->opaque);
+
+  for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+    if (*p == hw_pix_fmt) return *p;
+  }
+
+  Error("Failed to get HW surface format for %s.", av_get_pix_fmt_name(hw_pix_fmt));
+  for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++)
+    Error("Available HW surface format was %s.", av_get_pix_fmt_name(*p));
+
+  return AV_PIX_FMT_NONE;
+}
+#if !LIBAVUTIL_VERSION_CHECK(56, 22, 0, 14, 0)
+static enum AVPixelFormat find_fmt_by_hw_type(const enum AVHWDeviceType type) {
+  switch (type) {
+  case AV_HWDEVICE_TYPE_VAAPI:
+        return AV_PIX_FMT_VAAPI;
+  case AV_HWDEVICE_TYPE_DXVA2:
+    return AV_PIX_FMT_DXVA2_VLD;
+  case AV_HWDEVICE_TYPE_D3D11VA:
+    return AV_PIX_FMT_D3D11;
+  case AV_HWDEVICE_TYPE_VDPAU:
+    return AV_PIX_FMT_VDPAU;
+  case AV_HWDEVICE_TYPE_CUDA:
+    return AV_PIX_FMT_CUDA;
+  case AV_HWDEVICE_TYPE_QSV:
+    return AV_PIX_FMT_VAAPI;
+#ifdef QUADRA
+  case AV_HWDEVICE_TYPE_NI_QUADRA:
+    return AV_PIX_FMT_NI_QUAD;
+#endif
+#ifdef AV_HWDEVICE_TYPE_MMAL
+  case AV_HWDEVICE_TYPE_MMAL:
+    return AV_PIX_FMT_MMAL;
+#endif
+  case AV_HWDEVICE_TYPE_VIDEOTOOLBOX:
+    return AV_PIX_FMT_VIDEOTOOLBOX;
+  default:
+    return AV_PIX_FMT_NONE;
+  }
+}
+#endif
+#endif
+#endif
+
+int setup_hwaccel(
+    AVCodecContext *codec_ctx,
+    const CodecData *codec_data,
+    AVBufferRef * &hw_device_ctx,
+    const std::string &device,
+    int width,
+    int height) {
+#if HAVE_LIBAVUTIL_HWCONTEXT_H && LIBAVCODEC_VERSION_CHECK(57, 107, 0, 107, 0)
+  if (codec_data->hwdevice_type == AV_HWDEVICE_TYPE_NONE) {
+    return 0;
+  }
+  int ret = av_hwdevice_ctx_create(&hw_device_ctx,
+      codec_data->hwdevice_type,
+      device.empty() ? codec_data->hwdevice_default : device.c_str(),
+      nullptr, 0);
+  if (0>ret) {
+    Error("Failed to create hwdevice_ctx %s", av_make_error_string(ret).c_str());
+    return ret;
+  }
+  codec_ctx->get_format = get_hw_format;
+  codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+
+  AVBufferRef *hw_frames_ref;
+  AVHWFramesContext *frames_ctx = nullptr;
+
+  if (!(hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx))) {
+    Error("Failed to create hwaccel frame context.");
+    return -1;
+  }
+  frames_ctx = (AVHWFramesContext *)(hw_frames_ref->data);
+  frames_ctx->format    = codec_data->hw_pix_fmt;
+  frames_ctx->sw_format = codec_data->sw_pix_fmt;
+  frames_ctx->width     = width;
+  frames_ctx->height    = height;
+  frames_ctx->initial_pool_size = 20;
+  if ((ret = av_hwframe_ctx_init(hw_frames_ref)) < 0) {
+    Error("Failed to initialize hwaccel frame context."
+        "Error code: %s", av_err2str(ret));
+    av_buffer_unref(&hw_frames_ref);
+  } else {
+    codec_ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+    if (!codec_ctx->hw_frames_ctx) {
+      Error("Failed to allocate hw_frames_ctx");
+      return -1;
+    }
+  }
+  av_buffer_unref(&hw_frames_ref);
+  av_buffer_unref(&hw_device_ctx);
+#endif
+  return 0;
+} // end setup_hwaccel
 
 void log_libav_callback(void *ptr, int level, const char *fmt, va_list vargs) {
   Logger *log = Logger::fetch();
   int log_level = 0;
-  if ( level == AV_LOG_QUIET ) { // -8
+  if (level == AV_LOG_QUIET) { // -8
     log_level = Logger::NOLOG;
-  } else if ( level == AV_LOG_PANIC ) { //0
+  } else if (level == AV_LOG_PANIC) { //0
     log_level = Logger::PANIC;
-  } else if ( level == AV_LOG_FATAL ) { // 8
+  } else if (level == AV_LOG_FATAL) { // 8
     log_level = Logger::FATAL;
-  } else if ( level == AV_LOG_ERROR ) { // 16
+  } else if (level == AV_LOG_ERROR) { // 16
     log_level = Logger::WARNING; // ffmpeg outputs a lot of errors that don't really affect anything.
-    //log_level = Logger::ERROR;
-  } else if ( level == AV_LOG_WARNING ) { //24
+  } else if (level == AV_LOG_WARNING) { //24
     log_level = Logger::INFO;
-    //log_level = Logger::WARNING;
-  } else if ( level == AV_LOG_INFO ) { //32
+  } else if (level == AV_LOG_INFO) { //32
     log_level = Logger::DEBUG1;
-    //log_level = Logger::INFO;
-  } else if ( level == AV_LOG_VERBOSE ) { //40
+  } else if (level == AV_LOG_VERBOSE) { //40
     log_level = Logger::DEBUG2;
-  } else if ( level == AV_LOG_DEBUG ) { //48
+  } else if (level == AV_LOG_DEBUG) { //48
     log_level = Logger::DEBUG3;
 #ifdef AV_LOG_TRACE
-  } else if ( level == AV_LOG_TRACE ) {
+  } else if (level == AV_LOG_TRACE) {
     log_level = Logger::DEBUG8;
 #endif
 #ifdef AV_LOG_MAX_OFFSET
-  } else if ( level == AV_LOG_MAX_OFFSET ) {
+  } else if (level == AV_LOG_MAX_OFFSET) {
     log_level = Logger::DEBUG9;
 #endif
   } else {
     Error("Unknown log level %d", level);
   }
 
-  if ( log ) {
+  if (log and (log->level() >= log_level) ) {
     char logString[8192];
-    vsnprintf(logString, sizeof(logString)-1, fmt, vargs);
-    int length = strlen(logString);
-    // ffmpeg logs have a carriage return, so replace it with terminator
-    logString[length-1] = 0;
-    log->logPrint(false, __FILE__, __LINE__, log_level, logString);
+    int length = vsnprintf(logString, sizeof(logString)-1, fmt, vargs);
+    if (length > 0) {
+      if (static_cast<size_t>(length) > sizeof(logString)-1) length = sizeof(logString)-1;
+      // ffmpeg logs have a carriage return, so replace it with terminator
+      logString[length-1] = 0;
+      log->logPrint(false, __FILE__, __LINE__, log_level, "%s", logString);
+    } else {
+      log->logPrint(false, __FILE__, __LINE__, AV_LOG_ERROR, "Can't encode log from av. fmt was %s", fmt);
+    }
   }
 }
 
@@ -75,16 +566,16 @@ static bool bInit = false;
 
 void FFMPEGInit() {
 
-  if ( !bInit ) {
-    if ( logDebugging()  && config.log_ffmpeg ) {
+  if (!bInit) {
+    if (logDebugging() && config.log_ffmpeg) {
       av_log_set_level(AV_LOG_DEBUG);
-      av_log_set_callback(log_libav_callback); 
+      av_log_set_callback(log_libav_callback);
       Info("Enabling ffmpeg logs, as LOG_DEBUG+LOG_FFMPEG are enabled in options");
     } else {
-      Info("Not enabling ffmpeg logs, as LOG_FFMPEG and/or LOG_DEBUG is disabled in options, or this monitor is not part of your debug targets");
+      Debug(1,"Not enabling ffmpeg logs, as LOG_FFMPEG and/or LOG_DEBUG is disabled in options, or this monitor is not part of your debug targets");
       av_log_set_level(AV_LOG_QUIET);
     }
-#if !LIBAVFORMAT_VERSION_CHECK(58, 9, 0, 64, 0)
+#if !LIBAVFORMAT_VERSION_CHECK(58, 9, 58, 9, 0)
     av_register_all();
 #endif
     avformat_network_init();
@@ -97,106 +588,13 @@ void FFMPEGDeInit() {
   bInit = false;
 }
 
-#if HAVE_LIBAVUTIL
+// DEPRECATED: use zm_pixformat_from_colours() from zm_pixformat.h instead.
 enum _AVPIXELFORMAT GetFFMPEGPixelFormat(unsigned int p_colours, unsigned p_subpixelorder) {
-  enum _AVPIXELFORMAT pf;
-
-  Debug(8,"Colours: %d SubpixelOrder: %d",p_colours,p_subpixelorder);
-
-  switch(p_colours) {
-    case ZM_COLOUR_RGB24:
-      {
-        if(p_subpixelorder == ZM_SUBPIX_ORDER_BGR) {
-          /* BGR subpixel order */
-          pf = AV_PIX_FMT_BGR24;
-        } else {
-          /* Assume RGB subpixel order */
-          pf = AV_PIX_FMT_RGB24;
-        }
-        break;
-      }
-    case ZM_COLOUR_RGB32:
-      {
-        if(p_subpixelorder == ZM_SUBPIX_ORDER_ARGB) {
-          /* ARGB subpixel order */
-          pf = AV_PIX_FMT_ARGB;
-        } else if(p_subpixelorder == ZM_SUBPIX_ORDER_ABGR) {
-          /* ABGR subpixel order */
-          pf = AV_PIX_FMT_ABGR;
-        } else if(p_subpixelorder == ZM_SUBPIX_ORDER_BGRA) {
-          /* BGRA subpixel order */
-          pf = AV_PIX_FMT_BGRA;
-        } else {
-          /* Assume RGBA subpixel order */
-          pf = AV_PIX_FMT_RGBA;
-        }
-        break;
-      }
-    case ZM_COLOUR_GRAY8:
-      pf = AV_PIX_FMT_GRAY8;
-      break;
-    default:
-      Panic("Unexpected colours: %d",p_colours);
-      pf = AV_PIX_FMT_GRAY8; /* Just to shush gcc variable may be unused warning */
-      break;
-  }
-
-  return pf;
+  return zm_pixformat_from_colours(p_colours, p_subpixelorder);
 }
-/* The following is copied directly from newer ffmpeg. */
-#if LIBAVUTIL_VERSION_CHECK(52, 7, 0, 17, 100)
-#else
-static int parse_key_value_pair(AVDictionary **pm, const char **buf,
-                                const char *key_val_sep, const char *pairs_sep,
-                                int flags)
-{
-    char *key = av_get_token(buf, key_val_sep);
-    char *val = NULL;
-    int ret;
 
-    if (key && *key && strspn(*buf, key_val_sep)) {
-        (*buf)++;
-        val = av_get_token(buf, pairs_sep);
-    }
-
-    if (key && *key && val && *val)
-        ret = av_dict_set(pm, key, val, flags);
-    else
-        ret = AVERROR(EINVAL);
-
-    av_freep(&key);
-    av_freep(&val);
-
-    return ret;
-}
-int av_dict_parse_string(AVDictionary **pm, const char *str,
-    const char *key_val_sep, const char *pairs_sep,
-    int flags) {
-  if (!str)
-    return 0;
-
-  /* ignore STRDUP flags */
-  flags &= ~(AV_DICT_DONT_STRDUP_KEY | AV_DICT_DONT_STRDUP_VAL);
-
-  while (*str) {
-    int ret;
-    if ( (ret = parse_key_value_pair(pm, &str, key_val_sep, pairs_sep, flags)) < 0)
-      return ret;
-
-    if (*str)
-      str++;
-  }
-
-  return 0;
-}
-#endif
-#endif // HAVE_LIBAVUTIL
-
-#endif // HAVE_LIBAVCODEC || HAVE_LIBAVUTIL || HAVE_LIBSWSCALE
-
-#if HAVE_LIBAVUTIL
 #if LIBAVUTIL_VERSION_CHECK(56, 0, 0, 17, 100)
-int64_t av_rescale_delta(AVRational in_tb, int64_t in_ts,  AVRational fs_tb, int duration, int64_t *last, AVRational out_tb){
+int64_t av_rescale_delta(AVRational in_tb, int64_t in_ts,  AVRational fs_tb, int duration, int64_t *last, AVRational out_tb) {
   int64_t a, b, this_thing;
 
   av_assert0(in_ts != AV_NOPTS_VALUE);
@@ -219,201 +617,197 @@ simple_round:
   return av_rescale_q(this_thing, fs_tb, out_tb);
 }
 #endif
-#endif
 
-int hacked_up_context2_for_older_ffmpeg(AVFormatContext **avctx, AVOutputFormat *oformat, const char *format, const char *filename) {
-  AVFormatContext *s = avformat_alloc_context();
-  int ret = 0;
-
-  *avctx = NULL;
-  if (!s) {
-    av_log(s, AV_LOG_ERROR, "Out of memory\n");
-    ret = AVERROR(ENOMEM);
-    return ret;
-  }
-
-  if (!oformat) {
-    if (format) {
-      oformat = av_guess_format(format, NULL, NULL);
-      if (!oformat) {
-        av_log(s, AV_LOG_ERROR, "Requested output format '%s' is not a suitable output format\n", format);
-        ret = AVERROR(EINVAL);
-      }
-    } else {
-      oformat = av_guess_format(NULL, filename, NULL);
-      if (!oformat) {
-        ret = AVERROR(EINVAL);
-        av_log(s, AV_LOG_ERROR, "Unable to find a suitable output format for '%s'\n", filename);
-      }
-    }
-  }
-
-  if (ret) {
-    avformat_free_context(s);
-    return ret;
-  }
-
-  s->oformat = oformat;
-#if 0
-  if (s->oformat->priv_data_size > 0) {
-      if (s->oformat->priv_class) {
-        // This looks wrong, we just allocated priv_data and now we are losing the pointer to it.FIXME
-        *(const AVClass**)s->priv_data = s->oformat->priv_class;
-        av_opt_set_defaults(s->priv_data);
-      } else {
-    s->priv_data = av_mallocz(s->oformat->priv_data_size);
-    if ( ! s->priv_data) {
-      av_log(s, AV_LOG_ERROR, "Out of memory\n");
-      ret = AVERROR(ENOMEM);
-      return ret;
-    }
-    s->priv_data = NULL;
-  }
-#endif
-
-  if (filename) strncpy(s->filename, filename, sizeof(s->filename)-1);
-  *avctx = s;
-  return 0;
-}
-
-static void zm_log_fps(double d, const char *postfix) {
+const std::string get_fps_string(double d, const char *postfix) {
   uint64_t v = lrintf(d * 100);
   if (!v) {
-    Debug(1, "%1.4f %s", d, postfix);
+    return stringtf("%1.4f %s", d, postfix);
   } else if (v % 100) {
-    Debug(1, "%3.2f %s", d, postfix);
+    return stringtf("%3.2f %s", d, postfix);
   } else if (v % (100 * 1000)) {
-    Debug(1, "%1.0f %s", d, postfix);
+    return stringtf("%1.0f %s", d, postfix);
   } else {
-    Debug(1, "%1.0fk %s", d / 1000, postfix);
+    return stringtf("%1.0fk %s", d / 1000, postfix);
   }
 }
 
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-void zm_dump_codecpar ( const AVCodecParameters *par ) {
-  Debug(1, "Dumping codecpar codec_type(%d %s) codec_id(%d %s) codec_tag(%" PRIu32 ") width(%d) height(%d) bit_rate(%" PRIu64 ") format(%d %s)",
-      par->codec_type,
-      av_get_media_type_string(par->codec_type),
-      par->codec_id,
-      avcodec_get_name(par->codec_id),
-      par->codec_tag,
-      par->width,
-      par->height,
-      par->bit_rate,
-      par->format,
-      (((AVPixelFormat)par->format == AV_PIX_FMT_NONE) ? "none" : av_get_pix_fmt_name((AVPixelFormat)par->format))
-      ); 
+void zm_log_fps(double d, const char *postfix) {
+  Debug(1, "%s", get_fps_string(d, postfix).c_str());
 }
+
+void zm_dump_codecpar(const AVCodecParameters *par) {
+  Debug(1, "Dumping codecpar codec_type %d %s codec_id %d %s codec_tag %c%c%c%c"
+        " width %d height %d bit_rate%" PRIu64 " bpcs %d bprs %d format%d %s"
+        " extradata:%d:%s profile %d level %d field order %d color_range %d"
+        " color_primaries %d color_trc %d color_space %d location %d video_delay %d",
+        static_cast<int>(par->codec_type),
+        av_get_media_type_string(par->codec_type),
+        static_cast<int>(par->codec_id),
+        avcodec_get_name(par->codec_id),
+        (char)(par->codec_tag& 0xFF),
+        (char)((par->codec_tag >> 8) & 0xFF),
+        (char)((par->codec_tag >> 16) & 0xFF),
+        (char)((par->codec_tag >> 24) & 0xFF),
+        par->width,
+        par->height,
+        par->bit_rate,
+        par->bits_per_coded_sample,
+        par->bits_per_raw_sample,
+        par->format,
+        (((AVPixelFormat)par->format == AV_PIX_FMT_NONE) ? "none" : av_get_pix_fmt_name((AVPixelFormat)par->format)),
+  par->extradata_size, ByteArrayToHexString(nonstd::span<const uint8> {
+    par->extradata,
+#if __cplusplus >= 202002L
+    static_cast<std::span<const unsigned char>::size_type>(par->extradata_size)
+#else
+    static_cast<nonstd::span_lite::span<const unsigned char>::size_type>(par->extradata_size)
 #endif
+  }).c_str(),
+  par->profile,
+  par->level,
+  static_cast<int>(par->field_order),
+  static_cast<int>(par->color_range),
+  static_cast<int>(par->color_primaries),
+  static_cast<int>(par->color_trc),
+  static_cast<int>(par->color_space),
+  static_cast<int>(par->chroma_location),
+  static_cast<int>(par->video_delay)
+       );
+}
 
 void zm_dump_codec(const AVCodecContext *codec) {
-  Debug(1, "Dumping codec_context codec_type(%d) codec_id(%d %s) width(%d) height(%d)  timebase(%d/%d) format(%s) "
-      "gop_size %d max_b_frames %d me_cmp %d me_range %d qmin %d qmax %d",
-    codec->codec_type,
-    codec->codec_id,
-    avcodec_get_name(codec->codec_id),
-    codec->width,
-    codec->height,
-    codec->time_base.num,
-    codec->time_base.den,
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-    (codec->pix_fmt == AV_PIX_FMT_NONE ? "none" : av_get_pix_fmt_name(codec->pix_fmt)),
+  Debug(1, "Dumping codec_context codec_type %d %s codec_id %d %s tag %c%c%c%c width %d height %d timebase %d/%d format %s profile %d level %d "
+        "gop_size %d has_b_frames %d max_b_frames %d me_cmp %d me_range %d qmin %d qmax %d bit_rate %" PRId64 " qcompress %f extradata:%d:%s",
+        codec->codec_type,
+        av_get_media_type_string(codec->codec_type),
+        codec->codec_id,
+        avcodec_get_name(codec->codec_id),
+        (char)(codec->codec_tag& 0xFF),
+        (char)((codec->codec_tag >> 8) & 0xFF),
+        (char)((codec->codec_tag >> 16) & 0xFF),
+        (char)((codec->codec_tag >> 24) & 0xFF),
+        codec->width,
+        codec->height,
+        codec->time_base.num,
+        codec->time_base.den,
+        (codec->pix_fmt == AV_PIX_FMT_NONE ? "none" : av_get_pix_fmt_name(codec->pix_fmt)),
+        codec->profile,
+        codec->level,
+        codec->gop_size,
+        codec->has_b_frames,
+        codec->max_b_frames,
+        codec->me_cmp,
+        codec->me_range,
+        codec->qmin,
+        codec->qmax,
+        codec->bit_rate,
+        codec->qcompress,
+        codec->extradata_size,
+  ByteArrayToHexString(nonstd::span<const uint8> {
+    codec->extradata,
+#if __cplusplus >= 202002L
+    static_cast<std::span<const unsigned char>::size_type>(codec->extradata_size)
 #else
-    "unsupported on avconv",
+    static_cast<nonstd::span_lite::span<const unsigned char>::size_type>(codec->extradata_size)
 #endif
-    codec->gop_size,
-    codec->max_b_frames,
-    codec->me_cmp,
-    codec->me_range,
-    codec->qmin,
-    codec->qmax
-    );
+  }).c_str()
+       );
 }
 
 /* "user interface" functions */
 void zm_dump_stream_format(AVFormatContext *ic, int i, int index, int is_output) {
-  Debug(1, "Dumping stream index i(%d) index(%d)", i, index );
-  int flags = (is_output ? ic->oformat->flags : ic->iformat->flags);
+  Debug(1, "Dumping stream index i(%d) index(%d)", i, index);
   AVStream *st = ic->streams[i];
-  AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-  AVCodecParameters *codec = st->codecpar;
-#else
-  AVCodecContext *codec = st->codec;
-#endif
-
-  Debug(1, "    Stream #%d:%d", index, i);
-
-  /* the pid is an important information, so we display it */
-  /* XXX: add a generic system */
+  int flags = (is_output ? ic->oformat->flags : ic->iformat->flags);
   if (flags & AVFMT_SHOW_IDS)
     Debug(1, "ids [0x%x]", st->id);
-  if (lang)
-    Debug(1, "language (%s)", lang->value);
-  Debug(1, "frames:%d, frame_size:%d stream timebase: %d/%d",
-      st->codec_info_nb_frames, codec->frame_size,
-      st->time_base.num, st->time_base.den
-      );
+  Debug(1, "    Stream #%d:%d", index, i);
+  zm_dump_stream(st);
+}
 
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-  Debug(1, "codec: %s", avcodec_get_name(st->codecpar->codec_id));
-#else
-  char buf[256];
-  avcodec_string(buf, sizeof(buf), st->codec, is_output);
-  Debug(1, "codec: %s", buf);
-#endif
+void zm_dump_stream(AVStream *st) {
+  AVCodecParameters *codec = st->codecpar;
+  std::string output;
 
-  if ( st->sample_aspect_ratio.num && // default
+  output += stringtf("frame_size:%d timebase: %d/%d", codec->frame_size, st->time_base.num, st->time_base.den);
+  output += stringtf(" codec: %s %s", avcodec_get_name(st->codecpar->codec_id), av_get_media_type_string(st->codecpar->codec_type));
+
+  if (st->sample_aspect_ratio.num && // default
       av_cmp_q(st->sample_aspect_ratio, codec->sample_aspect_ratio)
-      ) {
+     ) {
     AVRational display_aspect_ratio;
     av_reduce(&display_aspect_ratio.num,
-        &display_aspect_ratio.den,
-        codec->width  * (int64_t)st->sample_aspect_ratio.num,
-        codec->height * (int64_t)st->sample_aspect_ratio.den,
-        1024 * 1024);
-    Debug(1, ", SAR %d:%d DAR %d:%d",
-        st->sample_aspect_ratio.num, st->sample_aspect_ratio.den,
-        display_aspect_ratio.num, display_aspect_ratio.den);
+              &display_aspect_ratio.den,
+              codec->width  * (int64_t)st->sample_aspect_ratio.num,
+              codec->height * (int64_t)st->sample_aspect_ratio.den,
+              1024 * 1024);
+    output += stringtf(" SAR %d:%d DAR %d:%d",
+          st->sample_aspect_ratio.num, st->sample_aspect_ratio.den,
+          display_aspect_ratio.num, display_aspect_ratio.den);
+  } else {
+    output += stringtf(" SAR %d:%d ",
+          st->sample_aspect_ratio.num, st->sample_aspect_ratio.den);
   }
 
-  if ( codec->codec_type == AVMEDIA_TYPE_VIDEO ) {
+  if (codec->codec_type == AVMEDIA_TYPE_VIDEO) {
     int fps = st->avg_frame_rate.den && st->avg_frame_rate.num;
     int tbn = st->time_base.den && st->time_base.num;
 
     if (fps)
-      zm_log_fps(av_q2d(st->avg_frame_rate), "fps");
+      output += get_fps_string(av_q2d(st->avg_frame_rate), "fps");
     if (tbn)
-      zm_log_fps(1 / av_q2d(st->time_base), "stream tb numerator");
+      output += get_fps_string(1 / av_q2d(st->time_base), "stream tb numerator");
+  } else if (codec->codec_type == AVMEDIA_TYPE_AUDIO) {
+#if LIBAVUTIL_VERSION_CHECK(57, 28, 100, 28, 0)
+    output += stringtf("profile %d channels %d sample_rate %d",
+          codec->profile, codec->ch_layout.nb_channels, codec->sample_rate);
+#else
+    output += stringtf("profile %d channels %d sample_rate %d",
+          codec->profile, codec->channels, codec->sample_rate);
+#endif
+  } else {
+    output += stringtf("Unknown codec type %d", codec->codec_type);
   }
 
   if (st->disposition & AV_DISPOSITION_DEFAULT)
-    Debug(1, " (default)");
+    output += " (default)";
   if (st->disposition & AV_DISPOSITION_DUB)
-    Debug(1, " (dub)");
+    output += " (dub)";
   if (st->disposition & AV_DISPOSITION_ORIGINAL)
-    Debug(1, " (original)");
+    output += " (original)";
   if (st->disposition & AV_DISPOSITION_COMMENT)
-    Debug(1, " (comment)");
+    output += " (comment)";
   if (st->disposition & AV_DISPOSITION_LYRICS)
-    Debug(1, " (lyrics)");
+    output += " (lyrics)";
   if (st->disposition & AV_DISPOSITION_KARAOKE)
-    Debug(1, " (karaoke)");
+    output += " (karaoke)";
   if (st->disposition & AV_DISPOSITION_FORCED)
-    Debug(1, " (forced)");
+    output += " (forced)";
   if (st->disposition & AV_DISPOSITION_HEARING_IMPAIRED)
-    Debug(1, " (hearing impaired)");
+    output += " (hearing impaired)";
   if (st->disposition & AV_DISPOSITION_VISUAL_IMPAIRED)
-    Debug(1, " (visual impaired)");
+    output += " (visual impaired)";
   if (st->disposition & AV_DISPOSITION_CLEAN_EFFECTS)
-    Debug(1, " (clean effects)");
+    output += " (clean effects)";
 
-  //dump_metadata(NULL, st->metadata, "    ");
-
-  //dump_sidedata(NULL, st, "    ");
+  Debug(1, "%s", output.c_str());
 }
 
-int check_sample_fmt(AVCodec *codec, enum AVSampleFormat sample_fmt) {
+int check_sample_fmt(const AVCodec *codec, enum AVSampleFormat sample_fmt) {
+#if LIBAVCODEC_VERSION_CHECK(61, 19,100, 19, 100)
+  const enum AVSampleFormat *sample_fmts;
+  int num_sample_fmts;
+  int ret = avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, (const void **) &sample_fmts, &num_sample_fmts);
+  if (ret < 0)
+    return ret;
+  if (sample_fmts) {
+    for (int i = 0; i < num_sample_fmts; i++) {
+      if (sample_fmt == sample_fmts[i])
+        return 1;
+    }
+  } // end if sample_fmts
+
+#else
   const enum AVSampleFormat *p = codec->sample_fmts;
 
   while (*p != AV_SAMPLE_FMT_NONE) {
@@ -422,253 +816,155 @@ int check_sample_fmt(AVCodec *codec, enum AVSampleFormat sample_fmt) {
     else Debug(2, "Not %s", av_get_sample_fmt_name( *p ) );
     p++;
   }
-  return 0;
-}
-
-#if LIBAVCODEC_VERSION_CHECK(56, 8, 0, 60, 100)
-#else
-unsigned int zm_av_packet_ref( AVPacket *dst, AVPacket *src ) {
-  av_new_packet(dst,src->size);
-  memcpy(dst->data, src->data, src->size);
-  dst->flags = src->flags;
-  dst->pts = src->pts;
-  dst->dts = src->dts;
-  dst->duration = src->duration;
-  dst->stream_index = src->stream_index;
-  return 0;
-}
-const char *avcodec_get_name(enum AVCodecID id) {
-  const AVCodecDescriptor *cd;
-  if ( id == AV_CODEC_ID_NONE)
-    return "none";
-  cd = avcodec_descriptor_get(id);
-  if (cd)
-    return cd->name;
-  AVCodec *codec;
-  codec = avcodec_find_decoder(id);
-  if (codec) 
-    return codec->name;
-  codec = avcodec_find_encoder(id);
-  if (codec)
-    return codec->name;
-  return "unknown codec";
-}
-
-void av_packet_rescale_ts(
-    AVPacket *pkt,
-    AVRational src_tb,
-    AVRational dst_tb
-    ) {
-  if ( pkt->pts != AV_NOPTS_VALUE)
-    pkt->pts = av_rescale_q(pkt->pts, src_tb, dst_tb);
-  if ( pkt->dts != AV_NOPTS_VALUE)
-    pkt->dts = av_rescale_q(pkt->dts, src_tb, dst_tb);
-  if ( pkt->duration != AV_NOPTS_VALUE)
-    pkt->duration = av_rescale_q(pkt->duration, src_tb, dst_tb);
-}
 #endif
+  return 0;
+}
 
-bool is_video_stream( AVStream * stream ) {
-  #if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-      if ( stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ) {
-  #else
-  #if (LIBAVCODEC_VERSION_CHECK(52, 64, 0, 64, 0) || LIBAVUTIL_VERSION_CHECK(50, 14, 0, 14, 0))
-      if ( stream->codec->codec_type == AVMEDIA_TYPE_VIDEO ) {
-  #else
-      if ( stream->codec->codec_type == CODEC_TYPE_VIDEO ) {
-  #endif
-  #endif
+enum AVPixelFormat fix_deprecated_pix_fmt(enum AVPixelFormat fmt) {
+  // Fix deprecated formats
+  switch ( fmt ) {
+  case AV_PIX_FMT_YUVJ422P  :
+        return AV_PIX_FMT_YUV422P;
+  case AV_PIX_FMT_YUVJ444P   :
+    return AV_PIX_FMT_YUV444P;
+  case AV_PIX_FMT_YUVJ440P :
+    return AV_PIX_FMT_YUV440P;
+  case AV_PIX_FMT_NONE :
+  case AV_PIX_FMT_YUVJ420P :
+    return AV_PIX_FMT_YUV420P;
+  default:
+    return fmt;
+  }
+}
+
+bool pix_fmt_is_jpeg_range(enum AVPixelFormat fmt) {
+  // The deprecated YUVJ* formats carry full-range (0-255) luma/chroma, as
+  // opposed to the limited/broadcast range (16-235) of their non-J equivalents.
+  switch (fmt) {
+  case AV_PIX_FMT_YUVJ411P:
+  case AV_PIX_FMT_YUVJ420P:
+  case AV_PIX_FMT_YUVJ422P:
+  case AV_PIX_FMT_YUVJ440P:
+  case AV_PIX_FMT_YUVJ444P:
+    return true;
+  default:
+    return false;
+  }
+}
+
+void zm_sws_set_ranges(struct SwsContext *ctx,
+                       enum AVPixelFormat original_src_fmt,
+                       enum AVPixelFormat original_dst_fmt) {
+  // swscale assumes limited (MPEG) range by default. When a side of the
+  // conversion was a full-range JPEG format (YUVJ*) that got mapped to its
+  // non-J equivalent by fix_deprecated_pix_fmt(), swscale would otherwise
+  // treat full-range samples as limited (or crush full-range output into
+  // limited range) and wash the colours out. Tell it which sides are full
+  // range. Pass the ORIGINAL (pre-fix) formats.
+  const bool src_full = pix_fmt_is_jpeg_range(original_src_fmt);
+  const bool dst_full = pix_fmt_is_jpeg_range(original_dst_fmt);
+  if (!src_full && !dst_full) return;
+
+  int *inv_table, *table;
+  int srcRange, dstRange, brightness, contrast, saturation;
+  // Returns < 0 when the conversion does not expose colorspace details (e.g.
+  // RGB->RGB); nothing to correct in that case.
+  if (sws_getColorspaceDetails(ctx, &inv_table, &srcRange, &table, &dstRange,
+                               &brightness, &contrast, &saturation) < 0)
+    return;
+  bool changed = false;
+  if (src_full && srcRange != 1) { srcRange = 1; changed = true; }
+  if (dst_full && dstRange != 1) { dstRange = 1; changed = true; }
+  if (!changed) return;
+  sws_setColorspaceDetails(ctx, inv_table, srcRange, table, dstRange,
+                           brightness, contrast, saturation);
+}
+
+bool is_video_stream(const AVStream * stream) {
+  if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
     return true;
   }
+
+  Debug(2, "Not a video type %d != %d", stream->codecpar->codec_type, AVMEDIA_TYPE_VIDEO);
   return false;
 }
 
-bool is_video_context( AVCodecContext *codec_context ) {
-  return
-  #if (LIBAVCODEC_VERSION_CHECK(52, 64, 0, 64, 0) || LIBAVUTIL_VERSION_CHECK(50, 14, 0, 14, 0))
-      ( codec_context->codec_type == AVMEDIA_TYPE_VIDEO );
-  #else
-      ( codec_context->codec_type == CODEC_TYPE_VIDEO );
-  #endif
+bool is_video_context(const AVCodecContext *codec_context) {
+  return codec_context->codec_type == AVMEDIA_TYPE_VIDEO;
 }
 
-bool is_audio_stream( AVStream * stream ) {
-  #if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-      if ( stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ) {
-  #else
-  #if (LIBAVCODEC_VERSION_CHECK(52, 64, 0, 64, 0) || LIBAVUTIL_VERSION_CHECK(50, 14, 0, 14, 0))
-      if ( stream->codec->codec_type == AVMEDIA_TYPE_AUDIO ) {
-  #else
-      if ( stream->codec->codec_type == CODEC_TYPE_AUDIO ) {
-  #endif
-  #endif
-    return true;
-  }
-  return false;
+bool is_audio_stream(const AVStream *stream) {
+  return stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
 }
 
-bool is_audio_context( AVCodecContext *codec_context ) {
-  return
-  #if (LIBAVCODEC_VERSION_CHECK(52, 64, 0, 64, 0) || LIBAVUTIL_VERSION_CHECK(50, 14, 0, 14, 0))
-      ( codec_context->codec_type == AVMEDIA_TYPE_AUDIO );
-  #else
-      ( codec_context->codec_type == CODEC_TYPE_AUDIO );
-  #endif
+bool is_audio_context(const AVCodecContext *codec_context) {
+  return codec_context->codec_type == AVMEDIA_TYPE_AUDIO;
 }
 
 int zm_receive_packet(AVCodecContext *context, AVPacket &packet) {
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
   int ret = avcodec_receive_packet(context, &packet);
-  if ( ret < 0 ) {
-    if ( AVERROR_EOF != ret ) {
-      Error("Error encoding (%d) (%s)", ret,
-          av_err2str(ret));
-    }
-    return 0;
-  }
-  return 1;
-#else
-  int got_packet = 0;
-  int ret = avcodec_encode_audio2(context, &packet, NULL, &got_packet);
-  if ( ret < 0 ) {
+  if ((ret < 0) and (AVERROR_EOF != ret)) {
     Error("Error encoding (%d) (%s)", ret, av_err2str(ret));
   }
-  return got_packet;
-#endif
+  return ret; // 1 or 0
 }  // end int zm_receive_packet(AVCodecContext *context, AVPacket &packet)
 
-int zm_send_packet_receive_frame(
-    AVCodecContext *context,
-    AVFrame *frame,
-    AVPacket &packet) {
-  int ret;
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-  if ( (ret = avcodec_send_packet(context, &packet)) < 0 ) {
-    Error("Unable to send packet %s, continuing",
-       av_make_error_string(ret).c_str());
-    return ret;
+int zm_send_packet_receive_frame(AVCodecContext *context, AVFrame *frame, AVPacket &packet) {
+  int pkt_ret, frm_ret;
+
+  pkt_ret = avcodec_send_packet(context, &packet);
+  frm_ret = avcodec_receive_frame(context, frame);
+
+  if (pkt_ret == 0 && frm_ret == 0) {
+    // In this api the packet is always consumed, so return packet.bytes
+    return packet.size;
+  } else if (pkt_ret != 0 && pkt_ret != AVERROR(EAGAIN)) {
+    //Error("Could not send packet (error %d = %s)", pkt_ret,
+          //av_make_error_string(pkt_ret).c_str());
+    return pkt_ret;
+  } else if (frm_ret != 0 && frm_ret != AVERROR(EAGAIN)) {
+    //Error("Could not receive frame (error %d = %s)", frm_ret,
+          //av_make_error_string(frm_ret).c_str());
+    return frm_ret;
   }
 
-  if ( (ret = avcodec_receive_frame(context, frame)) < 0 ) {
-    if ( AVERROR(EAGAIN) == ret ) {
-      // The codec may need more samples than it has, perfectly valid
-      Debug(2, "Codec not ready to give us a frame");
-    } else {
-      Error("Could not recieve frame (error %d = '%s')", ret,
-          av_make_error_string(ret).c_str());
-    }
-    return ret;
-  }
-# else
-  int frameComplete = 0;
-  while ( !frameComplete ) {
-    if ( is_video_context(context) ) {
-      ret = zm_avcodec_decode_video(context, frame, &frameComplete, &packet);
-    } else {
-      ret = avcodec_decode_audio4(context, frame, &frameComplete, &packet);
-    }
-    if ( ret < 0 ) {
-      Error("Unable to decode frame: %s", av_make_error_string(ret).c_str());
-      return ret;
-    }
-  } // end while !frameComplete
-#endif
   return 0;
-} // end int zm_send_packet_receive_frame(AVCodecContext *context, AVFrame *frame, AVPacket &packet)
+}  // end int zm_send_packet_receive_frame(AVCodecContext *context, AVFrame *frame, AVPacket &packet)
 
 /* Returns < 0 on error, 0 if codec not ready, 1 on success
  */
 int zm_send_frame_receive_packet(AVCodecContext *ctx, AVFrame *frame, AVPacket &packet) {
-  int ret;
-  #if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-    if ( (ret = avcodec_send_frame(ctx, frame)) < 0 ) {
-      Error("Could not send frame (error '%s')",
-            av_make_error_string(ret).c_str());
-      return ret;
-    }
+  int frm_ret, pkt_ret;
 
-    if ( (ret = avcodec_receive_packet(ctx, &packet)) < 0 ) {
-      if ( AVERROR(EAGAIN) == ret ) {
-        // The codec may need more samples than it has, perfectly valid
-        Debug(2, "Codec not ready to give us a packet");
-        return 0;
-      } else {
-        Error("Could not recieve packet (error %d = '%s')", ret,
-              av_make_error_string(ret).c_str());
-      }
-      zm_av_packet_unref(&packet);
-      return ret;
-    }
-  #else
-    int data_present;
-    if ( (ret = avcodec_encode_audio2(
-            ctx, &packet, frame, &data_present)) < 0 ) {
-      Error("Could not encode frame (error '%s')",
-            av_make_error_string(ret).c_str());
-      zm_av_packet_unref(&packet);
-      return ret;
-    }
-    if ( !data_present ) {
-      Debug(2, "Not ready to out a frame yet.");
-      zm_av_packet_unref(&packet);
+  frm_ret = avcodec_send_frame(ctx, frame);
+  pkt_ret = avcodec_receive_packet(ctx, &packet);
+
+  if (frm_ret != 0 && frame) {
+    Error("Could not send frame (error '%s')",
+          av_make_error_string(frm_ret).c_str());
+    return frm_ret;
+  } else if (pkt_ret != 0) {
+    if (pkt_ret == AVERROR(EAGAIN)) {
+      // The codec may need more samples than it has, perfectly valid
+      Debug(2, "Codec not ready to give us a packet");
       return 0;
+    } else if (frame) {
+      // May get EOF if frame is NULL because it signals flushing
+      Error("Could not receive packet (error %d = '%s')", pkt_ret,
+            av_make_error_string(pkt_ret).c_str());
     }
-  #endif
+    zm_av_packet_unref(&packet);
+    return pkt_ret;
+  }
   return 1;
 }  // end int zm_send_frame_receive_packet
 
-void dumpPacket(AVStream *stream, AVPacket *pkt, const char *text) {
-  char b[10240];
-
-  double pts_time = (double)av_rescale_q(pkt->pts,
-      stream->time_base,
-      AV_TIME_BASE_Q
-      ) / AV_TIME_BASE;
-
-  snprintf(b, sizeof(b),
-           " pts: %" PRId64 "=%f, dts: %" PRId64
-           ", size: %d, stream_index: %d, flags: %04x, keyframe(%d) pos: %" PRId64
-           ", duration: %" 
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-           PRId64
-#else
-           "d"
-#endif
-           "\n",
-           pkt->pts, 
-           pts_time,
-           pkt->dts,
-           pkt->size,
-           pkt->stream_index,
-           pkt->flags,
-           pkt->flags & AV_PKT_FLAG_KEY,
-           pkt->pos,
-           pkt->duration);
-  Debug(2, "%s:%d:%s: %s", __FILE__, __LINE__, text, b);
-}
-
-void dumpPacket(AVPacket *pkt, const char *text) {
-  char b[10240];
-
-  snprintf(b, sizeof(b),
-           " pts: %" PRId64 ", dts: %" PRId64
-           ", size: %d, stream_index: %d, flags: %04x, keyframe(%d) pos: %" PRId64
-           ", duration: %"
-#if LIBAVCODEC_VERSION_CHECK(57, 64, 0, 64, 0)
-           PRId64
-#else
-           "d"
-#endif
-           "\n",
-           pkt->pts,
-           pkt->dts,
-           pkt->size,
-           pkt->stream_index,
-           pkt->flags,
-           pkt->flags & AV_PKT_FLAG_KEY,
-           pkt->pos,
-           pkt->duration);
-  Debug(2, "%s:%d:%s: %s", __FILE__, __LINE__, text, b);
+void zm_free_codec(AVCodecContext **ctx) {
+  if (*ctx) {
+    // We allocate and copy in newer ffmpeg, so need to free it
+    avcodec_free_context(ctx);
+    *ctx = nullptr;
+  }
 }
 
 void zm_packet_copy_rescale_ts(const AVPacket *ipkt, AVPacket *opkt, const AVRational src_tb, const AVRational dst_tb) {
@@ -678,98 +974,42 @@ void zm_packet_copy_rescale_ts(const AVPacket *ipkt, AVPacket *opkt, const AVRat
   av_packet_rescale_ts(opkt, src_tb, dst_tb);
 }
 
-#if defined(HAVE_LIBSWRESAMPLE) || defined(HAVE_LIBAVRESAMPLE)
-int zm_resample_audio(
-#if defined(HAVE_LIBSWRESAMPLE)
-    SwrContext *resample_ctx,
-#else
-#if defined(HAVE_LIBAVRESAMPLE)
-    AVAudioResampleContext *resample_ctx,
-#endif
-#endif
-    AVFrame *in_frame,
-    AVFrame *out_frame
-    ) {
-#if defined(HAVE_LIBSWRESAMPLE)
-  if ( in_frame ) {
+int zm_resample_audio(SwrContext *resample_ctx, AVFrame *in_frame, AVFrame *out_frame) {
+  if (in_frame) {
     // Resample the in_frame into the audioSampleBuffer until we process the whole
     // decoded data. Note: pts does not survive resampling or converting
     Debug(2, "Converting %d to %d samples using swresample",
-        in_frame->nb_samples, out_frame->nb_samples);
+          in_frame->nb_samples, out_frame->nb_samples);
   } else {
     Debug(2, "Sending NULL frame to flush resampler");
   }
   int ret = swr_convert_frame(resample_ctx, out_frame, in_frame);
-  if ( ret < 0 ) {
+  if (ret < 0) {
     Error("Could not resample frame (error '%s')",
-        av_make_error_string(ret).c_str());
+          av_make_error_string(ret).c_str());
     return 0;
   }
-  Debug(3,"swr_get_delay %d",
-      swr_get_delay(resample_ctx, out_frame->sample_rate));
-#else
-#if defined(HAVE_LIBAVRESAMPLE)
-  if ( ! in_frame ) {
-    Error("Flushing resampler not supported by AVRESAMPLE");
-    return 0;
-  }
-  int ret = avresample_convert(resample_ctx, NULL, 0, 0, in_frame->data,
-                            0, in_frame->nb_samples);
-  if ( ret < 0 ) {
-    Error("Could not resample frame (error '%s')",
-        av_make_error_string(ret).c_str());
-    return 0;
-  }
-  int samples_available = avresample_available(resample_ctx);
-  if ( samples_available < out_frame->nb_samples ) {
-    Debug(1, "Not enough samples yet (%d)", samples_available);
-    return 0;
-  }
-
-  // Read a frame audio data from the resample fifo
-  if ( avresample_read(resample_ctx, out_frame->data, out_frame->nb_samples) !=
-      out_frame->nb_samples) {
-    Warning("Error reading resampled audio.");
-    return 0;
-  }
-#endif
-#endif
+  Debug(3, "swr_get_delay %" PRIi64, swr_get_delay(resample_ctx, out_frame->sample_rate));
   zm_dump_frame(out_frame, "Out frame after resample");
   return 1;
 }
 
-int zm_resample_get_delay(
-#if defined(HAVE_LIBSWRESAMPLE)
-        SwrContext *resample_ctx,
-#else
-#if defined(HAVE_LIBAVRESAMPLE)
-        AVAudioResampleContext *resample_ctx,
-#endif
-#endif
-        int time_base
-    ) { 
-#if defined(HAVE_LIBSWRESAMPLE)
+int zm_resample_get_delay(SwrContext *resample_ctx, int time_base) {
   return swr_get_delay(resample_ctx, time_base);
-#else
-#if defined(HAVE_LIBAVRESAMPLE)
-  return avresample_available(resample_ctx);
-#endif
-#endif
 }
-#endif
 
 int zm_add_samples_to_fifo(AVAudioFifo *fifo, AVFrame *frame) {
   int ret = av_audio_fifo_realloc(fifo, av_audio_fifo_size(fifo) + frame->nb_samples);
-  if ( ret < 0 ) {
+  if (ret < 0) {
     Error("Could not reallocate FIFO to %d samples",
-        av_audio_fifo_size(fifo) + frame->nb_samples);
+          av_audio_fifo_size(fifo) + frame->nb_samples);
     return 0;
   }
   /** Store the new samples in the FIFO buffer. */
   ret = av_audio_fifo_write(fifo, (void **)frame->data, frame->nb_samples);
-  if ( ret < frame->nb_samples ) {
+  if (ret < frame->nb_samples) {
     Error("Could not write data to FIFO. %d written, expecting %d. Reason %s",
-        ret, frame->nb_samples, av_make_error_string(ret).c_str());
+          ret, frame->nb_samples, av_make_error_string(ret).c_str());
     return 0;
   }
   return 1;
@@ -777,13 +1017,13 @@ int zm_add_samples_to_fifo(AVAudioFifo *fifo, AVFrame *frame) {
 
 int zm_get_samples_from_fifo(AVAudioFifo *fifo, AVFrame *frame) {
   // AAC requires 1024 samples per encode.  Our input tends to be something else, so need to buffer them.
-  if ( frame->nb_samples > av_audio_fifo_size(fifo) ) {
+  if (frame->nb_samples > av_audio_fifo_size(fifo)) {
     Debug(1, "Not enough samples in fifo for AAC codec frame_size %d > fifo size %d",
-         frame->nb_samples, av_audio_fifo_size(fifo));
+          frame->nb_samples, av_audio_fifo_size(fifo));
     return 0;
   }
 
-  if ( av_audio_fifo_read(fifo, (void **)frame->data, frame->nb_samples) < frame->nb_samples ) {
+  if (av_audio_fifo_read(fifo, (void **)frame->data, frame->nb_samples) < frame->nb_samples) {
     Error("Could not read data from FIFO");
     return 0;
   }
@@ -791,4 +1031,15 @@ int zm_get_samples_from_fifo(AVAudioFifo *fifo, AVFrame *frame) {
   zm_dump_frame(frame, "Out frame after fifo read");
   return 1;
 }
+#include <algorithm> // for std::max and std::min
 
+// Converts libjpeg quality [0-100] to ffmpeg -q:v [2-31] for MJPEG encoding
+int libjpeg_to_ffmpeg_qv(int libjpeg_quality) {
+    // Clamp libjpeg_quality to valid range
+    libjpeg_quality = std::max(0, std::min(100, libjpeg_quality));
+    // Map libjpeg 0-100 to ffmpeg 31-2
+    int ffmpeg_qv = 31 - static_cast<int>(libjpeg_quality * 29.0 / 100.0 + 0.5);
+    // Clamp ffmpeg_qv to valid range
+    ffmpeg_qv = std::max(2, std::min(31, ffmpeg_qv));
+    return ffmpeg_qv;
+}

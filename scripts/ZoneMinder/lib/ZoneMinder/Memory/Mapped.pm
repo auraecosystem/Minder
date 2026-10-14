@@ -81,13 +81,13 @@ sub zmMemAttach {
     return undef;
   }
   if ( defined($monitor->{MMapAddr}) ) {
-    Debug("zmMemAttach already attached at $monitor->{MMapAddr} for $$monitor{Id}");
+    Debug(3, "zmMemAttach already attached at $monitor->{MMapAddr} for $$monitor{Id}");
     return !undef;
   }
 
   my $mmap_file = $Config{ZM_PATH_MAP}.'/zm.mmap.'.$monitor->{Id};
   if ( ! -e $mmap_file ) {
-    Error("Memory map file '$mmap_file' does not exist in zmMemAttach.  zmc might not be running.");
+    Debug(1, "Memory map file '$mmap_file' does not exist in zmMemAttach.  zmc might not be running.");
     return undef;
   }
   my $mmap_file_size = -s $mmap_file;
@@ -168,11 +168,11 @@ sub zmMemPut {
 }
 
 sub zmMemClean {
-  Debug('Removing memory map files');
+  Debug(3, 'Removing memory map files');
   my $mapPath = $Config{ZM_PATH_MAP}.'/zm.mmap.*';
   foreach my $mapFile( glob( $mapPath ) ) {
     ( $mapFile ) = $mapFile =~ /^(.+)$/;
-    Debug("Removing memory map file '$mapFile'");
+    Debug(3, "Removing memory map file '$mapFile'");
     unlink($mapFile);
   }
 }

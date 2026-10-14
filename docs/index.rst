@@ -7,6 +7,8 @@ ZoneMinder Documentation
    installationguide/index
    userguide/index
    api
+   web_ui_api
+   stream_socket
    faq
    contributing
 
@@ -22,6 +24,12 @@ If you are facing issues that are not covered in the documentation, please feel 
 
 :doc:`api`
   Information on using the CakePHP based API for interfacing to ZoneMinder
+
+:doc:`web_ui_api`
+  Information on interfacing to ZoneMinder's Web UI
+
+:doc:`stream_socket`
+  The per-monitor media stream socket: live compressed video/audio for local consumers, and its wire protocol
 
 :doc:`faq`
   Frequently Asked Questions

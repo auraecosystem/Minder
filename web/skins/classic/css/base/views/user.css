@@ -1,0 +1,52 @@
+fieldset {
+  width: 100%;
+}
+
+fieldset .table {
+  margin-bottom: 0;
+}
+
+.BasicInformation, .Permissions {
+  width: auto;
+  float: unset;
+}
+
+#GroupsPermissions,
+#MonitorPermissions {
+  clear:both;
+}
+
+.Groups .name,
+.Monitors .name {
+  min-width: 200px;
+}
+.Groups .permission,
+.Monitors .permission {
+  min-width: 400px;
+}
+
+.table th {
+  text-align: right;
+  vertical-align: middle;
+}
+
+#contentForm {
+  overflow: auto;
+  height: 100%;
+}
+#header {
+  display: flex;
+  justify-content: space-between;
+}
+#header h2 {
+  margin: .5rem auto;
+}
+#contentButtons {
+  margin-left: auto;
+}
+
+
+#GroupsPermissions .table th,
+#MonitorPermissions .table th {
+  text-align: left;
+}

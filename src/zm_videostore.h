@@ -1,97 +1,200 @@
 #ifndef ZM_VIDEOSTORE_H
 #define ZM_VIDEOSTORE_H
 
+#include "zm_config.h"
+#include "zm_define.h"
 #include "zm_ffmpeg.h"
+#include "zm_swscale.h"
+
+#include <list>
+#include <memory>
+#include <map>
+#include <string>
+#include <vector>
+
 extern "C"  {
-#ifdef HAVE_LIBSWRESAMPLE
-  #include "libswresample/swresample.h"
-#else
-  #ifdef HAVE_LIBAVRESAMPLE
-    #include "libavresample/avresample.h"
-  #endif
+#include <libswresample/swresample.h>
+#include <libavutil/audio_fifo.h>
+#if HAVE_LIBAVUTIL_HWCONTEXT_H
+#include <libavutil/hwcontext.h>
 #endif
-#include "libavutil/audio_fifo.h"
+#include "libavutil/buffer.h"
 }
 
-#if HAVE_LIBAVCODEC
-
-#include "zm_monitor.h"
+class Monitor;
+class ZMPacket;
+class PacketQueue;
 
 class VideoStore {
-private:
+ public:
+  struct Fragment {
+    int64_t offset;    // byte offset in file
+    int64_t size;      // bytes (moof+mdat)
+    double duration;   // seconds
+  };
+
+ private:
+
+  const CodecData *chosen_codec_data;
+
+  Monitor *monitor;
   AVOutputFormat *out_format;
   AVFormatContext *oc;
-
-  AVCodec *video_out_codec;
-  AVCodecContext *video_out_ctx;
   AVStream *video_out_stream;
-
-  AVStream *video_in_stream;
-
-  AVStream *audio_in_stream;
-  Monitor *monitor;
-
-  // Move this into the object so that we aren't constantly allocating/deallocating it on the stack
-  AVPacket opkt;
-  // we are transcoding
-  AVFrame *in_frame;
-  AVFrame *out_frame;
+  AVStream *audio_out_stream;
 
   AVCodecContext *video_in_ctx;
+  AVCodecContext *video_out_ctx;
+
+  AVStream *video_in_stream;
+  AVStream *audio_in_stream;
+
   const AVCodec *audio_in_codec;
   AVCodecContext *audio_in_ctx;
-
   // The following are used when encoding the audio stream to AAC
-  AVStream *audio_out_stream;
-  AVCodec *audio_out_codec;
+  const AVCodec *audio_out_codec;
   AVCodecContext *audio_out_ctx;
-#ifdef HAVE_LIBSWRESAMPLE
+  // Move this into the object so that we aren't constantly allocating/deallocating it on the stack
+  av_packet_ptr opkt;
+
+  av_frame_ptr in_frame;
+  av_frame_ptr out_frame;
+
+  SWScale swscale;
+  unsigned int packets_written;
+  unsigned int frame_count;
+  bool video_encoded;  // true once at least one frame has been sent to the video encoder
+  // Set in open() when the monitor asked for ENCODE but no encoder would
+  // open. We then copy the input stream and write its packets unchanged,
+  // rather than recording nothing at all.
+  bool video_passthrough_fallback;
+
+  AVBufferRef *hw_device_ctx;
+
   SwrContext *resample_ctx;
-#else
-#ifdef HAVE_LIBAVRESAMPLE
-  AVAudioResampleContext* resample_ctx;
-#endif
-#endif
   AVAudioFifo *fifo;
   uint8_t *converted_in_samples;
-    
-	const char *filename;
-	const char *format;
-    
-  // These are for in
-  int64_t video_last_pts;
-  int64_t video_last_dts;
-  int64_t audio_last_pts;
-  int64_t audio_last_dts;
 
-  int64_t video_first_pts;
+  // filename is owned (std::string) so it stays valid for the lifetime of
+  // VideoStore even if the caller later renames/reassigns the source path
+  // it was constructed from. A bare const char* would dangle in that case.
+  std::string filename;
+  const char *format;
+
+  // These are for in
+  int64_t video_first_pts; /* starting pts of first in frame/packet */
   int64_t video_first_dts;
   int64_t audio_first_pts;
   int64_t audio_first_dts;
+  int64_t video_last_pts;
+  int64_t audio_last_pts;
 
   // These are for out, should start at zero.  We assume they do not wrap because we just aren't going to save files that big.
   int64_t *next_dts;
+  std::map<int, int64_t> last_dts;
+  std::map<int, int64_t> last_duration;
   int64_t audio_next_pts;
 
   int max_stream_index;
 
+  size_t reorder_queue_size;
+  std::map<int, std::list<std::shared_ptr<ZMPacket>>> reorder_queues;
+
+  // HLS fragment tracking. With movflags=frag_keyframe, FFmpeg's mov muxer
+  // doesn't write a fragment to disk until the *next* keyframe arrives (or
+  // until av_write_trailer is called). So when keyframe N arrives, fragment
+  // N-1 is what just got flushed. We snapshot avio_tell *after*
+  // av_interleaved_write_frame() to capture the position past that flush, and
+  // record fragment N-1 then.
+  std::vector<Fragment> fragments_;
+  int64_t last_fragment_offset_;    // byte offset where the current (in-progress) fragment starts
+  int64_t last_fragment_start_dts_; // DTS of the keyframe that started the current fragment
+  int64_t init_segment_end_;        // byte offset where init segment (ftyp+moov) ends
+  // Where open() reserved room for a leading sidx, or -1 when it did not.
+  // finalize() fills that region in; zm_mp4_sidx.h says why the index has to
+  // sit there and be reserved before the first fragment is written.
+  int64_t sidx_region_offset_;
+  int64_t sidx_region_size_;        // how many bytes open() reserved there
+  bool    finalized_;               // true once finalize() has run trailer + last-fragment recording
+
+  // What of the manifest is already on disk, and what it was written with, so
+  // writeM3U8 can add the new fragments to the end instead of rewriting it.
+  // Zeroed state means "rewrite from scratch", which is also the self-healing
+  // answer to anything unexpected.
+  size_t      m3u8_fragments_written_;
+  int         m3u8_target_duration_;
+  int64_t     m3u8_init_segment_end_;
+  int64_t     m3u8_bytes_written_;
+  std::string m3u8_path_;
+  std::string m3u8_video_url_;
+
   bool setup_resampler();
   int write_packet(AVPacket *pkt, AVStream *stream);
 
-public:
-	VideoStore(
-      const char *filename_in,
-      const char *format_in,
-      AVStream *video_in_stream,
-      AVStream *audio_in_stream,
-      Monitor * p_monitor);
+ public:
+  VideoStore(
+    const char *filename_in,
+    const char *format_in,
+    AVStream *video_in_stream,
+    AVCodecContext  *video_in_ctx,
+    AVStream *audio_in_stream,
+    Monitor * p_monitor);
+  ~VideoStore();
   bool  open();
-	~VideoStore();
 
-  int writeVideoFramePacket( AVPacket *pkt );
-  int writeAudioFramePacket( AVPacket *pkt );
+  void write_video_packet(AVPacket pkt);
+  void write_audio_packet(AVPacket pkt);
+  int writeVideoFramePacket(const std::shared_ptr<ZMPacket> pkt);
+  int writeAudioFramePacket(const std::shared_ptr<ZMPacket> pkt);
+  int writePacket(const std::shared_ptr<ZMPacket> pkt);
+  int write_packets(PacketQueue &queue);
+  void flush_codecs();
+  const std::vector<Fragment> &fragments() const { return fragments_; }
+  int64_t init_segment_end() const { return init_segment_end_; }
+  void writeM3U8(const std::string &path, const std::string &video_url, bool is_complete);
+
+  // --- Manifest text, split out so it is testable without a VideoStore ------
+  //
+  // An EVENT playlist is append only: the lines for a fragment never change
+  // once written, and only the header depends on anything global. So the
+  // header and a fragment's three lines are generated separately, and
+  // writeM3U8 appends when nothing above the new fragments would differ.
+
+  // Rounded up, and never below 1, as EXT-X-TARGETDURATION must be a positive
+  // integer no smaller than any fragment.
+  static int m3u8TargetDuration(const std::vector<Fragment> &frags);
+  static std::string m3u8Header(int target_duration,
+                                const std::string &video_url,
+                                int64_t init_segment_end,
+                                bool is_complete);
+  static std::string m3u8Fragment(const Fragment &frag, const std::string &video_url);
+  // Flush queues, write trailer, close output, and record the final fragment.
+  // Call this before writeM3U8(true) so the manifest contains every fragment.
+  // Safe to call once; subsequent calls are no-ops. The destructor will skip
+  // the trailer write if finalize() has already run.
+  void finalize();
+
+  // Whether we are really re-encoding video. That is the monitor's ENCODE
+  // setting unless every encoder failed to open, in which case open() fell
+  // back to passthrough and this is false. Callers must ask this rather than
+  // the monitor, or they will treat copied packets as encoded ones. Defined
+  // in the .cpp because Monitor is only forward declared here.
+  bool Encoding() const;
+
+  const char *get_codec() {
+    if (chosen_codec_data)
+      return chosen_codec_data->codec_codec;
+    if (video_out_stream)
+      return avcodec_get_name(video_out_stream->codecpar->codec_id);
+    return "";
+  }
+
+  // Keep our path in sync when the caller renames the on-disk file out from
+  // under the open AVFormatContext. FFmpeg's faststart trailer pass re-opens
+  // oc->url by name, and finalize() fopen()s filename to read the mfra box, so
+  // both must track the new name or they fail with ENOENT.
+  void set_filename(const std::string &new_filename);
 };
 
-#endif //havelibav
-#endif //zm_videostore_h
+#endif // ZM_VIDEOSTORE_H
 

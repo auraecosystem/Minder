@@ -19,17 +19,14 @@
 //
 
 // System edit actions
-if ( ! canEdit('System') ) {
+if (!canEdit('System')) {
   ZM\Warning('Need System permissions to add servers');
   return;
 }
 
-if ( $action == 'Save' ) {
-  if ( !empty($_REQUEST['id']) ) {
-    $dbServer = dbFetchOne(
-      'SELECT * FROM Servers WHERE Id=?',
-      NULL,
-      array($_REQUEST['id']) );
+if ($action == 'save') {
+  if (!empty($_REQUEST['id'])) {
+    $dbServer = dbFetchOne('SELECT * FROM Servers WHERE Id=?', NULL, [$_REQUEST['id']]);
   } else {
     $dbServer = array();
   }
@@ -37,16 +34,17 @@ if ( $action == 'Save' ) {
   $types = array();
   $changes = getFormChanges($dbServer, $_REQUEST['newServer'], $types);
 
-  if ( count($changes) ) {
-    if ( !empty($_REQUEST['id']) ) {
+  if (count($changes)) {
+    if (!empty($_REQUEST['id'])) {
       dbQuery('UPDATE Servers SET '.implode(', ', $changes).' WHERE Id = ?',
         array($_REQUEST['id']) );
     } else {
       dbQuery('INSERT INTO Servers SET '.implode(', ', $changes));
     }
+    ZM\AuditAction((!empty($_REQUEST['id']) ? 'update' : 'create'), 'server', $_REQUEST['id'] ?? 0, 'Changed: '.implode(', ', array_keys($changes)));
     $refreshParent = true;
   }
-  $view = 'none';
+  $redirect = '?view=options&tab=servers';
 } else {
   ZM\Error("Unknown action $action in saving Server");
 }

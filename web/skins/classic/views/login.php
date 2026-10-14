@@ -1,28 +1,63 @@
 <?php
 xhtmlHeaders(__FILE__, translate('Login'));
+getBodyTopHTML();
+echo getNavBarHTML();
 ?>
-<body>
-<?php echo getNavBarHTML(); ?>
-	<div class="container">
-		<form class="center-block" name="loginForm" id="loginForm" method="post" action="?">
-			<input type="hidden" name="action" value="login"/>
-			<input type="hidden" name="view" value="login"/>
+  <div id="content" class="container">
+<?php
+if ( defined('ZM_OPT_USE_AUTH') and ZM_OPT_USE_AUTH ) {
+  // Check for postLoginQuery in both $_GET (URL parameter) and $_SESSION
+  // Give priority to URL parameter as it's more immediate
+  $postLoginQuery = '';
+  if (isset($_GET['postLoginQuery'])) {
+    $postLoginQuery = validStr($_GET['postLoginQuery']);
+  } else if (isset($_SESSION['postLoginQuery'])) {
+    $postLoginQuery = validStr($_SESSION['postLoginQuery']);
+  }
+?>
+    <form class="center-block" name="loginForm" id="loginForm" method="post" action="?view=login">
+      <input type="hidden" name="action" value="login"/>
+      <input type="hidden" name="postLoginQuery" value="<?php echo validHtmlStr($postLoginQuery); ?>" />
 
-			<div id="loginError" class="hidden alarm" role="alert">
-				<span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
-				Invalid username or password.
-			</div>
+      <div id="loginError" class="hidden alarm" role="alert">
+        <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
+        Invalid username or password.
+      </div>
 
-			<div id="loginform">
+      <div id="loginform">
 
         <h1><i class="material-icons md-36">account_circle</i> <?php echo validHtmlStr(ZM_WEB_TITLE) . ' ' . translate('Login') ?></h1>
-	
-				<label for="inputUsername" class="sr-only"><?php echo translate('Username') ?></label>
-				<input type="text" id="inputUsername" name="username" class="form-control" autocapitalize="none" placeholder="Username" required autofocus autocomplete="username"/>
-	
-				<label for="inputPassword" class="sr-only"><?php echo translate('Password') ?></label>
-				<input type="password" id="inputPassword" name="password" class="form-control" placeholder="Password" required autocomplete="current-password"/>
 <?php
+// Optional site notice. Escaped rather than interpreted: this page is served
+// before anyone has authenticated, so it is not a place to emit raw markup.
+// nl2br runs after escaping so that the only tags in the output are the ones
+// we added, and a multi-line message still renders as multiple lines.
+if (defined('ZM_WEB_LOGIN_MESSAGE') and trim(ZM_WEB_LOGIN_MESSAGE) !== '') {
+?>
+        <div id="loginMessage"><?php echo nl2br(validHtmlStr(trim(ZM_WEB_LOGIN_MESSAGE))) ?></div>
+<?php
+}
+?>
+        <label for="inputUsername" class="sr-only"><?php echo translate('Username') ?></label>
+        <input type="text" id="inputUsername" name="username" class="form-control" autocapitalize="none" placeholder="Username" required autofocus autocomplete="username"/>
+
+        <label for="inputPassword" class="sr-only"><?php echo translate('Password') ?></label>
+        <div class="input-group">
+          <input type="password" id="inputPassword" name="password" class="form-control" placeholder="Password" required autocomplete="current-password"/>
+          <div class="input-group-append">
+            <span class="input-group-text material-icons md-18" data-on-click-this="toggle_password_visibility" data-password-input="inputPassword" title="<?php echo translate('Password') ?>">visibility</span>
+          </div>
+        </div>
+<?php
+if (defined('ZM_OPT_USE_REMEMBER_ME') && ZM_OPT_USE_REMEMBER_ME != 'None' && ZM_OPT_USE_REMEMBER_ME != '' && ZM_OPT_USE_REMEMBER_ME != '0') {
+  $checked = (ZM_OPT_USE_REMEMBER_ME == 'Yes') ? ' checked="checked"' : '';
+?>
+        <div class="form-check mt-2 mb-2">
+          <input type="checkbox" class="form-check-input" id="inputRememberMe" name="remember_me" value="1"<?php echo $checked ?>/>
+          <label class="form-check-label" for="inputRememberMe"><?php echo translate('RememberMe') ?></label>
+        </div>
+<?php
+}
 if (
   defined('ZM_OPT_USE_GOOG_RECAPTCHA') 
   && defined('ZM_OPT_GOOG_RECAPTCHA_SITEKEY') 
@@ -32,9 +67,22 @@ if (
   echo '<div class="g-recaptcha" data-sitekey="'.ZM_OPT_GOOG_RECAPTCHA_SITEKEY.'"></div>
     <script src="https://www.google.com/recaptcha/api.js" async defer></script>';
 } ?>
-				<button class="btn btn-lg btn-primary btn-block" type="submit"><?php echo translate('Login') ?></button>
-			</div>
-		</form>
-	</div>
-</body>
-</html>
+        <button class="btn btn-lg btn-primary btn-block" type="submit"><?php echo translate('Login') ?></button>
+      </div>
+    </form>
+<?php 
+} else {
+?>
+<div class="error">
+User Authentication is not turned on. You cannot log in.
+<script nonce="<?php echo $cspNonce; ?>">
+  setTimeout(function() {
+    window.location.replace('?view='+homeView);
+  }, 500);
+</script>
+</div>
+<?php
+} # end if ZM_OPT_AUTH
+?>
+  </div>
+<?php xhtmlFooter() ?>

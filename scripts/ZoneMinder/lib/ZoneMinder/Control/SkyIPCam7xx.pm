@@ -82,6 +82,13 @@ sub sendCmd {
   return $result;
 }
 
+sub reboot {
+  my $self = shift;
+  Debug('Camera Rebot');
+  my $cmd = '/admin/reboot.cgi?type=0';
+  $self->sendCmd($cmd);
+}
+
 sub reset {
   my $self = shift;
   Debug('Camera Reset');
@@ -251,8 +258,7 @@ Brian Rudy, E<lt>brudyNO@SPAMpraecogito.comE<gt>
 
 Copyright (C) 2008 by Brian Rudy
 
-This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.3 or,
-at your option, any later version of Perl 5 you may have available.
+Licensed under the GNU General Public License v2 or later; see the COPYING
+file distributed with ZoneMinder for the full text.
 
 =cut

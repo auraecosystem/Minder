@@ -30,6 +30,7 @@ use warnings;
 
 require ZoneMinder::Base;
 require ZoneMinder::Control;
+require Device::SerialPort;
 
 our @ISA = qw(ZoneMinder::Control);
 
@@ -53,8 +54,11 @@ sub open
 
     $self->loadMonitor();
 
-    use Device::SerialPort;
     $self->{port} = new Device::SerialPort( $self->{Monitor}->{ControlDevice} );
+    if (!$self->{port}) {
+      Error("Failed to open serial port ".$self->{Monitor}->{ControlDevice}.' reason:'.$!);
+      return undef;
+    }
     $self->{port}->baudrate(4800);
     $self->{port}->databits(8);
     $self->{port}->parity('none');
@@ -703,9 +707,8 @@ Philip Coombes, E<lt>philip.coombes@zoneminder.comE<gt>
 
 Copyright (C) 2001-2008  Philip Coombes
 
-This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.3 or,
-at your option, any later version of Perl 5 you may have available.
+Licensed under the GNU General Public License v2 or later; see the COPYING
+file distributed with ZoneMinder for the full text.
 
 
 =cut

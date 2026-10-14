@@ -52,29 +52,6 @@
 // Example
 // header( "Content-Type: text/html; charset=iso-8859-1" );
 
-// You may need to change your locale here if your default one is incorrect for the
-// language described in this file, or if you have multiple languages supported.
-// If you do need to change your locale, be aware that the format of this function
-// is subtlely different in versions of PHP before and after 4.3.0, see
-// http://uk2.php.net/manual/en/function.setlocale.php for details.
-// Also be aware that changing the whole locale may affect some floating point or decimal 
-// arithmetic in the database, if this is the case change only the individual locale areas
-// that don't affect this rather than all at once. See the examples below.
-// Finally, depending on your setup, PHP may not enjoy have multiple locales in a shared 
-// threaded environment, if you get funny errors it may be this.
-//
-// Examples
-// setlocale( 'LC_ALL', 'en_GB' ); All locale settings pre-4.3.0
-// setlocale( LC_ALL, 'en_GB' ); All locale settings 4.3.0 and after
-// setlocale( LC_CTYPE, 'en_GB' ); Character class settings 4.3.0 and after
-// setlocale( LC_TIME, 'en_GB' ); Date and time formatting 4.3.0 and after
-
-// Set date and time format (example: sam. 18 avril, 19h02)
-setlocale(LC_ALL, "fr_FR.UTF-8");
-define("DATE_FMT_CONSOLE_LONG", "%a %d %b, %Hh%M");
-define( "STRF_FMT_DATETIME_SHORT", "%d/%m/%y %H:%M:%S" );
-define( "STRF_FMT_DATETIME_SHORTER", "%d/%m %H:%M:%S" );
-
 // Simple String Replacements
 $SLANG = array(
     '24BitColour'          => 'Couleur 24 bits',
@@ -154,10 +131,9 @@ $SLANG = array(
     'BadDevice'            => 'Le chemin de l\'équipement être défini',
     'BadFPSReportInterval' => 'L\'intervalle de rafraîchissement  de l\'information i/s doit être un entier supérieur ou égal à 0',
     'BadFormat'            => 'Le format doit être un nombre entier supérieur ou égal à 0',
-    'BadFrameSkip'         => 'Le nombre d\'images à sauter doit être un entier supérieur ou égal à 0',
     'BadHeight'            => 'La valeur de la hauteur est invalide',
     'BadHost'              => 'Le nom d\'hôte doit être une adresse ip ou un nom dns valide sans le préfixe http://',
-    'BadImageBufferCount'  => 'La taille du tampon d \'images doit être un entier supérieur ou égal à 10',
+    'BadImageBufferCount'  => 'La taille du tampon d \'images doit être un entier supérieur ou égal à 2',
     'BadLabelX'            => 'La coordonnée X pour l\'horodatage doit être un entier supérieur ou égal à 0',
     'BadLabelY'            => 'La coordonnée Y pour l\'horodatage doit être un entier supérieur ou égal à 0',
     'BadMaxFPS'            => 'Le nombre maximum d\'i/s doit être un entier ou un nombre à virgule flottante supérieur à 0',
@@ -169,7 +145,7 @@ $SLANG = array(
     'BadPostEventCount'    => 'Le nombre d\'images post-événements doit être un entier supérieur ou égal à 0',
     'BadPreEventCount'     => 'Le nombre d\'images pré-événements doit être un entier supérieur ou égal à 0 et doit rester inférieur à la taille du tampon d\'images',
     'BadRefBlendPerc'      => 'Le pourcentage de fusion de l\'image de référence doit être un entier supérieur à 0 et inférieur à 100',
-    'BadSectionLength'     => 'La longueur de la section doit être un entier supérieur ou égal à 30',
+    'BadSectionLength'     => 'La longueur de la section doit être un entier supérieur ou égal à 10',
     'BadSignalCheckColour' => 'La chaîne de caractères pour la couleur d\'état du signal est invalide',
     'BadSourceType'        => 'Source Type \"Web Site\" requires the Function to be set to \"Monitor\"', // Added - 2018-08-30
     'BadStreamReplayBuffer'=> 'Le tampon d\'images pour la relecture doit être un entier supérieur ou égal à 0',
@@ -249,6 +225,7 @@ $SLANG = array(
     'Config'               => 'Config',
     'ConfiguredFor'        => 'Configuré pour',
     'ConfirmDeleteEvents'  => 'Etes-vous sûr de vouloir effacer le(s) événement(s) sélectionné(s)?',
+    'ConfirmDeleteLayout'  => 'Êtes-vous sûr de vouloir supprimer la mise en page actuelle ?',
     'ConfirmPassword'      => 'Répéter mot de passe',
     'ConjAnd'              => 'et',
     'ConjOr'               => 'ou',
@@ -348,16 +325,16 @@ $SLANG = array(
     'Ffmpeg'               => 'Ffmpeg',                 // Added - 2009-02-08
     'File'                 => 'Fichier',
     'Filter'               => 'Filtre',                 // Added - 2015-04-18
-    'FilterArchiveEvents'  => 'Archiver',
-    'FilterDeleteEvents'   => 'Effacer',
-    'FilterEmailEvents'    => 'Envoyer les détails par email',
+    'FilterArchiveEvents'  => 'Archiver les évènements',
+    'FilterDeleteEvents'   => 'Effacer les évènements',
+    'FilterEmailEvents'    => 'Envoyer les évènements par email',
     'FilterExecuteEvents'  => 'Exécuter une commande',
     'FilterLog'            => 'Filtre',             // Added - 2015-04-18
     'FilterMessageEvents'  => 'Envoyer les détails par message',
-    'FilterMoveEvents'     => 'Move all matches',       // Added - 2018-08-30
+    'FilterMoveEvents'     => 'Déplacer tous les évènements',       // Added - 2018-08-30
     'FilterPx'             => 'Filtre Px',
     'FilterUnset'          => 'Vous devez spécifier une largeur et une hauteur de filtre',
-    'FilterUpdateDiskSpace'=> 'Update used disk space', // Added - 2018-08-30
+    'FilterUpdateDiskSpace'=> 'Mies à jour de l\'espace disque utilisé', // Added - 2018-08-30
     'FilterUploadEvents'   => 'Transférer',
     'FilterVideoEvents'    => 'Créer vidéo',
     'Filters'              => 'Filtres',
@@ -376,7 +353,6 @@ $SLANG = array(
     'Frame'                => 'Image',
     'FrameId'              => 'N°',
     'FrameRate'            => 'Cadence image',
-    'FrameSkip'            => 'Saut image',
     'Frames'               => 'Images',
     'Func'                 => 'Fct',
     'Function'             => 'Mode',
@@ -401,7 +377,7 @@ $SLANG = array(
     'HasWhiteSpeed'        => 'Vitesse',
     'HasZoomSpeed'         => 'Vitesse',
     'High'                 => 'Haut',
-    'HighBW'               => 'Haut débit',
+    'Highband'               => 'Haut débit',
     'Home'                 => 'Maison',
     'Hostname'             => 'Hostname',               // Added - 2018-08-30
     'Hour'                 => 'Heure',
@@ -422,7 +398,6 @@ $SLANG = array(
     'Last'                 => 'Dernier',
     'Layout'               => 'Disposition',                 // Added - 2009-02-08
     'Level'                => 'Niveau',                  // Added - 2011-06-16
-    'Libvlc'               => 'Libvlc',
     'LimitResultsPost'     => 'résultat(s) seulement', // This is used at the end of the phrase 'Limit to first N results only'
     'LimitResultsPre'      => 'Limiter au(x) premier(s)', // This is used at the beginning of the phrase 'Limit to first N results only'
     'Line'                 => 'Ligne',                   // Added - 2011-06-16
@@ -439,7 +414,7 @@ $SLANG = array(
     'Logout'               => 'Déconnexion',
     'Logs'                 => 'Journaux',                   // Added - 2011-06-17
     'Low'                  => 'Bas',
-    'LowBW'                => 'Bas débit',
+    'Lowband'                => 'Bas débit',
     'Main'                 => 'Principal',
     'Man'                  => 'Man',
     'Manual'               => 'Manuel',
@@ -470,7 +445,7 @@ $SLANG = array(
     'MaxZoomStep'          => 'Pas max',
     'MaximumFPS'           => 'i/s maximum',
     'Medium'               => 'Moyen',
-    'MediumBW'             => 'Moy. débit',
+    'Medband'             => 'Moy. débit',
     'Message'              => 'Message',                // Added - 2011-06-16
     'MinAlarmAreaLtMax'    => 'La surface minimum en alarme doit être inférieure au maximum',
     'MinAlarmAreaUnset'    => 'Vous devez spécifier la surface minimum en alarme (nb de pixels)',
@@ -602,6 +577,7 @@ $SLANG = array(
     'PostEventImageBuffer' => 'Nb d\'image(s) post-événement',
     'PreEventImageBuffer'  => 'Nb d\'image(s) pré-événement',
     'PreserveAspect'       => 'Préserver les proportions',
+    'PreviewRate'          => 'Vitesse de prévisualisation',
     'Preset'               => 'Préréglage',
     'Presets'              => 'Préréglages',
     'Prev'                 => 'Précédent',
@@ -610,7 +586,6 @@ $SLANG = array(
     'ProfileProbeIntro'    => 'La liste ci-dessous montre les profils de flux existants pour la caméra sélectionnée.<br/><br/>Sélectionnez le profil désiré dans la liste ci-dessous.<br/><br/>Veuillez noter que ZoneMinder ne peut pas configurer de profils additionels et que la sauvegarde entraînera l\'écrasement des paramètres déjà configurés pour la caméra en cours.<br/><br/>', // Added - 2015-04-18
     'Progress'             => 'Progression',               // Added - 2015-04-18
     'Protocol'             => 'Protocole',
-    'RTSPDescribe'         => 'Use RTSP Response Media URL', // Added - 2018-08-30
     'RTSPTransport'        => 'RTSP Transport Protocol', // Added - 2018-08-30
     'Rate'                 => 'Vitesse',
     'Real'                 => 'Réel',
@@ -943,12 +918,6 @@ $OLANG = array(
 		          "\"allowed_media_types=video\" Set datatype to request fromcam (audio, video, data)~~~~".
 		          "\"reorder_queue_size=nnn\" Set number of packets to buffer for handling of reordered packets~~~~".
 		          "\"loglevel=debug\" Set verbosity of FFmpeg (quiet, panic, fatal, error, warning, info, verbose, debug)"
-	),
-	'OPTIONS_LIBVLC' => array(
-		'Help' => "Parameters in this field are passed on to libVLC. Multiple parameters can be separated by ,~~ ".
-		          "Examples (do not enter quotes)~~~~".
-		          "\"--rtp-client-port=nnn\" Set local port to use for rtp data~~~~". 
-		          "\"--verbose=2\" Set verbosity of libVLC"
 	),
 	
     'LANG_DEFAULT' => array(

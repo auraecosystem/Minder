@@ -53,35 +53,32 @@ possible, this should run at more or less constant speed.
 
 */
 
-#include <getopt.h>
-#include <signal.h>
-#if defined(__FreeBSD__)
-#include <limits.h>
-#else
-#include <values.h>
-#endif
-
-#if !defined(MAXINT)
-#define MAXINT INT_MAX
-#endif
-
 #include "zm.h"
+#include "zm_camera.h"
 #include "zm_db.h"
-#include "zm_time.h"
-#include "zm_signal.h"
+#include "zm_define.h"
+#include "zm_fifo.h"
 #include "zm_monitor.h"
+#include "zm_signal.h"
+#include "zm_stream_socket_protocol.h"
+#include "zm_time.h"
+#include "zm_utils.h"
+
+#include <getopt.h>
+#include <iostream>
+#include <unistd.h>
 
 void Usage() {
   fprintf(stderr, "zmc -d <device_path> or -r <proto> -H <host> -P <port> -p <path> or -f <file_path> or -m <monitor_id>\n");
 
   fprintf(stderr, "Options:\n");
 #if defined(BSD)
-  fprintf(stderr, "  -d, --device <device_path>         : For local cameras, device to access. E.g /dev/bktr0 etc\n");
+  fprintf(stderr, "  -d, --device <device_path> : For local cameras, device to access. E.g /dev/bktr0 etc\n");
 #else
-  fprintf(stderr, "  -d, --device <device_path>         : For local cameras, device to access. E.g /dev/video0 etc\n");
+  fprintf(stderr, "  -d, --device <device_path> : For local cameras, device to access. E.g /dev/video0 etc\n");
 #endif
-  fprintf(stderr, "  -f, --file <file_path>           : For local images, jpg file to access.\n");
-  fprintf(stderr, "  -m, --monitor <monitor_id>         : For sources associated with a single monitor\n");
+  fprintf(stderr, "  -f, --file <file_path>     : For local images, jpg file to access.\n");
+  fprintf(stderr, "  -m, --monitor <monitor_id> : For sources associated with a single monitor\n");
   fprintf(stderr, "  -h, --help                 : This screen\n");
   fprintf(stderr, "  -v, --version              : Report the installed version of ZoneMinder\n");
   exit(0);
@@ -90,7 +87,7 @@ void Usage() {
 int main(int argc, char *argv[]) {
   self = argv[0];
 
-  srand(getpid() * time(0));
+  srand(getpid() * time(nullptr));
 
   const char *device = "";
   const char *protocol = "";
@@ -101,16 +98,16 @@ int main(int argc, char *argv[]) {
   int monitor_id = -1;
 
   static struct option long_options[] = {
-    {"device", 1, 0, 'd'},
-    {"protocol", 1, 0, 'r'},
-    {"host", 1, 0, 'H'},
-    {"port", 1, 0, 'P'},
-    {"path", 1, 0, 'p'},
-    {"file", 1, 0, 'f'},
-    {"monitor", 1, 0, 'm'},
-    {"help", 0, 0, 'h'},
-    {"version", 0, 0, 'v'},
-    {0, 0, 0, 0}
+    {"device", 1, nullptr, 'd'},
+    {"protocol", 1, nullptr, 'r'},
+    {"host", 1, nullptr, 'H'},
+    {"port", 1, nullptr, 'P'},
+    {"path", 1, nullptr, 'p'},
+    {"file", 1, nullptr, 'f'},
+    {"monitor", 1, nullptr, 'm'},
+    {"help", 0, nullptr, 'h'},
+    {"version", 0, nullptr, 'v'},
+    {nullptr, 0, nullptr, 0}
   };
 
   while (1) {
@@ -122,34 +119,34 @@ int main(int argc, char *argv[]) {
     }
 
     switch (c) {
-      case 'd':
-        device = optarg;
-        break;
-      case 'H':
-        host = optarg;
-        break;
-      case 'P':
-        port = optarg;
-        break;
-      case 'p':
-        path = optarg;
-        break;
-      case 'f':
-        file = optarg;
-        break;
-      case 'm':
-        monitor_id = atoi(optarg);
-        break;
-      case 'h':
-      case '?':
-        Usage();
-        break;
-      case 'v':
-        std::cout << ZM_VERSION << "\n";
-        exit(0);
-      default:
-        // fprintf(stderr, "?? getopt returned character code 0%o ??\n", c);
-        break;
+    case 'd':
+      device = optarg;
+      break;
+    case 'H':
+      host = optarg;
+      break;
+    case 'P':
+      port = optarg;
+      break;
+    case 'p':
+      path = optarg;
+      break;
+    case 'f':
+      file = optarg;
+      break;
+    case 'm':
+      monitor_id = atoi(optarg);
+      break;
+    case 'h':
+    case '?':
+      Usage();
+      break;
+    case 'v':
+      std::cout << ZM_VERSION << "\n";
+      exit(0);
+    default:
+      // fprintf(stderr, "?? getopt returned character code 0%o ??\n", c);
+      break;
     }
   }
 
@@ -188,36 +185,40 @@ int main(int argc, char *argv[]) {
   }
 
   logInit(log_id_string);
-  zmLoadConfig();
+  zmLoadStaticConfig();
+  zmDbConnect();
+  zmLoadDBConfig();
   logInit(log_id_string);
 
-  hwcaps_detect();
+  HwCapsDetect();
+#if HAVE_LIBCURL
+  curl_global_init(CURL_GLOBAL_DEFAULT);
+#endif  // HAVE_LIBCURL
 
-  Monitor **monitors = 0;
-  int n_monitors = 0;
-#if ZM_HAS_V4L
+  std::vector<std::shared_ptr<Monitor>> monitors;
+#if ZM_HAS_V4L2
   if ( device[0] ) {
-    n_monitors = Monitor::LoadLocalMonitors(device, monitors, Monitor::CAPTURE);
+    monitors = Monitor::LoadLocalMonitors(device, Monitor::CAPTURE);
   } else
-#endif  // ZM_HAS_V4L
-  if ( host[0] ) {
-    if ( !port )
-      port = "80";
-    n_monitors = Monitor::LoadRemoteMonitors(protocol, host, port, path, monitors, Monitor::CAPTURE);
-  } else if ( file[0] ) {
-    n_monitors = Monitor::LoadFileMonitors(file, monitors, Monitor::CAPTURE);
-  } else {
-    Monitor *monitor = Monitor::Load(monitor_id, true, Monitor::CAPTURE);
-    if ( monitor ) {
-      monitors = new Monitor *[1];
-      monitors[0] = monitor;
-      n_monitors = 1;
+#endif  // ZM_HAS_V4L2
+    if ( host[0] ) {
+      if ( !port )
+        port = "80";
+      monitors = Monitor::LoadRemoteMonitors(protocol, host, port, path, Monitor::CAPTURE);
+    } else if ( file[0] ) {
+      monitors = Monitor::LoadFileMonitors(file, Monitor::CAPTURE);
+    } else {
+      std::shared_ptr<Monitor> monitor = Monitor::Load(monitor_id, true, Monitor::CAPTURE);
+      if ( monitor ) {
+        monitors.push_back(monitor);
+      }
     }
-  }
 
-  if ( !n_monitors ) {
+  if (monitors.empty()) {
     Error("No monitors found");
     exit(-1);
+  } else {
+    Debug(2, "%zu monitors loaded", monitors.size());
   }
 
   Info("Starting Capture version %s", ZM_VERSION);
@@ -225,157 +226,254 @@ int main(int argc, char *argv[]) {
   zmSetDefaultTermHandler();
   zmSetDefaultDieHandler();
 
-  sigset_t block_set;
-  sigemptyset(&block_set);
-
-  sigaddset(&block_set, SIGHUP);
-  sigaddset(&block_set, SIGUSR1);
-  sigaddset(&block_set, SIGUSR2);
+  struct sigaction sa;
+  sa.sa_handler = SIG_IGN; //handle signal by ignoring
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  if (sigaction(SIGCHLD, &sa, 0) == -1) {
+    Error("Unable to set SIGCHLD to ignore. There may be zombies.");
+  }
 
   int result = 0;
-
   int prime_capture_log_count = 0;
+  // Tracks whether a monitor's capture pipeline has faulted since it was last
+  // healthy, so a single capture_resumed fires once the pipeline recovers. The
+  // per-edge events ride the monitor stream socket (no-op until it exists,
+  // which is after the first successful prime; observable on every reconnect).
+  std::vector<bool> monitor_faulted(monitors.size(), false);
 
-  while ( !zm_terminate ) {
+  while (!zm_terminate) {
     result = 0;
-    static char sql[ZM_SQL_SML_BUFSIZ];
-    for ( int i = 0; i < n_monitors; i++ ) {
-      time_t now = (time_t)time(NULL);
-      monitors[i]->setStartupTime(now);
 
-      snprintf(sql, sizeof(sql),
-          "REPLACE INTO Monitor_Status (MonitorId, Status) VALUES ('%d','Running')",
-          monitors[i]->Id());
-      if ( mysql_query(&dbconn, sql) ) {
-        Error("Can't run query: %s", mysql_error(&dbconn));
+    for (size_t monitor_index = 0; monitor_index < monitors.size(); ++monitor_index) {
+      const std::shared_ptr<Monitor> &monitor = monitors[monitor_index];
+      std::string sql = stringtf(
+                          "INSERT INTO Monitor_Status (MonitorId,Status,CaptureFPS,AnalysisFPS,CaptureBandwidth)"
+                          " VALUES (%u, 'Running',0,0,0) ON DUPLICATE KEY UPDATE Status='Running',CaptureFPS=0,AnalysisFPS=0,CaptureBandwidth=0",
+                          monitor->Id());
+      zmDbDo(sql);
+
+      monitor->LoadCamera();
+
+      // Start the media stream socket before the first connect attempt so a
+      // consumer can observe connection/prime faults that happen before the
+      // camera ever comes up (the listener needs no camera, only lifecycle
+      // events until the first HELLO).
+      monitor->StartStreamSocket();
+
+      bool connection_failed = false;
+      while (!monitor->connect() and !zm_terminate) {
+        Warning("Couldn't connect to monitor %d", monitor->Id());
+        if (!connection_failed) {
+          monitor->SendStreamHealthEvent(zm::stream_socket::kEventConnectionFailed,
+                                         "Unable to connect to the capture source");
+          connection_failed = true;
+          monitor_faulted[monitor_index] = true;
+        }
+        monitor->SetHeartbeatTime(std::chrono::system_clock::now());
+        sleep(1);
       }
+      if (zm_terminate) break;
+      if (connection_failed)
+        monitor->SendStreamHealthEvent(zm::stream_socket::kEventConnectionRestored,
+                                       "Capture source connection restored");
+
+      SystemTimePoint now = std::chrono::system_clock::now();
+      monitor->SetStartupTime(now);
+
+      if (monitor->StartupDelay() > 0) {
+        Debug(1, "Doing startup sleep for %ds", monitor->StartupDelay());
+        std::this_thread::sleep_for(Seconds(monitor->StartupDelay()));
+      }
+
+      Seconds sleep_time = Seconds(0);
+      bool priming_failed = false;
+      while ((monitor->PrimeCapture() <= 0) and !zm_terminate) {
+        if (prime_capture_log_count % 60) {
+          logPrintf(Logger::ERROR + monitor->Importance(), "Failed to prime capture of initial monitor");
+        } else {
+          Debug(1, "Failed to prime capture of initial monitor");
+        }
+        if (!priming_failed) {
+          monitor->SendStreamHealthEvent(zm::stream_socket::kEventPrimeCaptureFailed,
+                                         "Unable to prime the capture source");
+          priming_failed = true;
+          monitor_faulted[monitor_index] = true;
+        }
+
+        prime_capture_log_count++;
+        if (sleep_time < Seconds(static_cast<int>(config.watch_max_delay))) {
+          sleep_time++;
+        }
+
+        std::this_thread::sleep_for(sleep_time);
+        monitor->SetHeartbeatTime(std::chrono::system_clock::now());
+      }
+      if (zm_terminate) break;
+      if (priming_failed)
+        monitor->SendStreamHealthEvent(zm::stream_socket::kEventPrimeCaptureRestored,
+                                       "Capture priming restored");
+      if (monitor_faulted[monitor_index]) {
+        monitor->SendStreamHealthEvent(zm::stream_socket::kEventCaptureResumed,
+                                       "Capture pipeline resumed");
+        monitor_faulted[monitor_index] = false;
+      }
+
+      sql = stringtf(
+              "INSERT INTO Monitor_Status (MonitorId,Status) VALUES (%u, 'Connected') ON DUPLICATE KEY UPDATE Status='Connected'",
+              monitor->Id());
+      zmDbDo(sql);
     }  // end foreach monitor
 
-    // Outer primary loop, handles connection to camera
-    if ( monitors[0]->PrimeCapture() < 0 ) {
-      if ( prime_capture_log_count % 60 ) {
-        Error("Failed to prime capture of initial monitor");
-      } else {
-        Debug(1, "Failed to prime capture of initial monitor");
-      }
-      prime_capture_log_count ++;
-      if ( !zm_terminate )
-        sleep(10);
-      continue;
-    }
+    if (zm_terminate) break;
 
-    int *capture_delays = new int[n_monitors];
-    int *alarm_capture_delays = new int[n_monitors];
-    int *next_delays = new int[n_monitors];
-    struct timeval * last_capture_times = new struct timeval[n_monitors];
-    for ( int i = 0; i < n_monitors; i++ ) {
-      last_capture_times[i].tv_sec = last_capture_times[i].tv_usec = 0;
-      capture_delays[i] = monitors[i]->GetCaptureDelay();
-      alarm_capture_delays[i] = monitors[i]->GetAlarmCaptureDelay();
-      snprintf(sql, sizeof(sql),
-          "REPLACE INTO Monitor_Status (MonitorId, Status) VALUES ('%d','Connected')",
-          monitors[i]->Id());
-      if ( mysql_query(&dbconn, sql) ) {
-        Error("Can't run query: %s", mysql_error(&dbconn));
-      }
-    } // end foreach monitor
+    std::vector<SystemTimePoint> last_capture_times = std::vector<SystemTimePoint>(monitors.size());
+    Microseconds sleep_time = Microseconds(0);
 
-    struct timeval now;
-    struct DeltaTimeval delta_time;
-    while ( !zm_terminate ) {
-      //sigprocmask(SIG_BLOCK, &block_set, 0);
-      for ( int i = 0; i < n_monitors; i++ ) {
-        long min_delay = MAXINT;
+    while (!zm_terminate) {
+      for (size_t i = 0; i < monitors.size(); i++) {
+        monitors[i]->CheckAction();
 
-        gettimeofday(&now, NULL);
-        for ( int j = 0; j < n_monitors; j++ ) {
-          if ( last_capture_times[j].tv_sec ) {
-            DELTA_TIMEVAL(delta_time, now, last_capture_times[j], DT_PREC_3);
-            if ( monitors[i]->GetState() == Monitor::ALARM )
-              next_delays[j] = alarm_capture_delays[j]-delta_time.delta;
-            else
-              next_delays[j] = capture_delays[j]-delta_time.delta;
-            if ( next_delays[j] < 0 )
-              next_delays[j] = 0;
-          } else {
-            next_delays[j] = 0;
-          }
-          if ( next_delays[j] <= min_delay ) {
-            min_delay = next_delays[j];
-          }
-        }  // end foreach monitor
+        if (monitors[i]->Capturing() == Monitor::CAPTURING_ONDEMAND) {
+          SystemTimePoint now = std::chrono::system_clock::now();
+          monitors[i]->SetHeartbeatTime(now);
 
-        if ( next_delays[i] <= min_delay || next_delays[i] <= 0 ) {
-          if ( monitors[i]->PreCapture() < 0 ) {
-            Error("Failed to pre-capture monitor %d %s (%d/%d)",
-                monitors[i]->Id(), monitors[i]->Name(), i+1, n_monitors);
-            monitors[i]->Close();
-            result = -1;
-            break;
-          }
-          if ( monitors[i]->Capture() < 0 ) {
-            Info("Failed to capture image from monitor %d %s (%d/%d)",
-                monitors[i]->Id(), monitors[i]->Name(), i+1, n_monitors);
-            monitors[i]->Close();
-            result = -1;
-            break;
-          }
-          if ( monitors[i]->PostCapture() < 0 ) {
-            Error("Failed to post-capture monitor %d %s (%d/%d)",
-                monitors[i]->Id(), monitors[i]->Name(), i+1, n_monitors);
-            monitors[i]->Close();
-            result = -1;
-            break;
-          }
-
-          if ( next_delays[i] > 0 ) {
-            gettimeofday(&now, NULL);
-            DELTA_TIMEVAL(delta_time, now, last_capture_times[i], DT_PREC_3);
-            long sleep_time = next_delays[i]-delta_time.delta;
-            if ( sleep_time > 0 ) {
-              usleep(sleep_time*(DT_MAXGRAN/DT_PREC_3));
+          time_t last_viewed = monitors[i]->getLastViewed();
+          int64 since_last_view = static_cast<int64>(std::chrono::duration_cast<Seconds>(now.time_since_epoch()).count()) - last_viewed;
+          Debug(1, "Last view %jd= %" PRId64 " seconds since last view", last_viewed, since_last_view);
+          if (!last_viewed or (since_last_view > 10)) {
+            // Nobody is watching — pause if running, otherwise stay paused.
+            // Keep capturing until we have written at least one image so that
+            // the console thumbnail and mode=single have something to show.
+            // Pause() no longer resets last_write_index, so once we have an
+            // image this stays true and we don't Pause/Play cycle.
+            if (monitors[i]->GetLastWriteIndex() != -1) {
+              if (monitors[i]->getCamera()->isPrimed()) {
+                monitors[i]->Pause();
+              }
+              std::this_thread::sleep_for(Microseconds(100000));
+              result = 0;
+              continue;
+            }
+          } else if (!monitors[i]->getCamera()->isPrimed()) {
+            if (1 > (result = monitors[i]->Play())) {
+              Debug(1, "Failed to play");
+              break;
             }
           }
-          gettimeofday(&(last_capture_times[i]), NULL);
-        }  // end if next_delay <= min_delay || next_delays[i] <= 0 )
+        } // end if ONDEMAND
 
-      }  // end foreach n_monitors
-      //sigprocmask(SIG_UNBLOCK, &block_set, 0);
-      if ( zm_reload ) {
-        for ( int i = 0; i < n_monitors; i++ ) {
-          monitors[i]->Reload();
+        if (monitors[i]->PreCapture() < 0) {
+          Error("Failed to pre-capture monitor %d %s (%zu/%zu)",
+                monitors[i]->Id(), monitors[i]->Name(), i + 1, monitors.size());
+          monitors[i]->SendStreamHealthEvent(zm::stream_socket::kEventCaptureFailed,
+                                             "Pre-capture failed");
+          monitor_faulted[i] = true;
+          result = -1;
+          break;
         }
-        logTerm();
-        logInit(log_id_string);
-        zm_reload = false;
-      }
-      if ( result < 0 ) {
+        if (monitors[i]->Capture() < 0) {
+          if (!zm_terminate)
+            logPrintf(Logger::ERROR + monitors[i]->Importance(), "Failed to capture image from monitor %d %s (%zu/%zu)",
+                monitors[i]->Id(), monitors[i]->Name(), i + 1, monitors.size());
+          monitors[i]->SendStreamHealthEvent(zm::stream_socket::kEventCaptureFailed,
+                                             "Capture failed");
+          monitor_faulted[i] = true;
+          result = -1;
+          break;
+        }
+        if (monitors[i]->PostCapture() < 0) {
+          Error("Failed to post-capture monitor %d %s (%zu/%zu)",
+                monitors[i]->Id(), monitors[i]->Name(), i + 1, monitors.size());
+          monitors[i]->SendStreamHealthEvent(zm::stream_socket::kEventCaptureFailed,
+                                             "Post-capture failed");
+          monitor_faulted[i] = true;
+          result = -1;
+          break;
+        }
+
+        if (!result) monitors[i]->UpdateFPS();
+
+        SystemTimePoint now = std::chrono::system_clock::now();
+        monitors[i]->SetHeartbeatTime(now);
+
+        // capture_delay is the amount of time we should sleep in useconds to achieve the desired framerate.
+        Microseconds delay = (monitors[i]->GetState() == Monitor::ALARM) ? monitors[i]->GetAlarmCaptureDelay()
+                             : monitors[i]->GetCaptureDelay();
+        if (delay != Microseconds(0)) {
+          if (last_capture_times[i].time_since_epoch() != Seconds(0)) {
+            Microseconds delta_time = std::chrono::duration_cast<Microseconds>(now - last_capture_times[i]);
+
+            // You have to add back in the previous sleep time
+            sleep_time = delay - (delta_time - sleep_time);
+
+            // Limit negative since feedback - if an error occurred can loose seconds and then run too fast for a while so rather accept the frame loss
+            // Or if the camera exposure is longer than intended FPS (eg at night) don't build up a huge negative that will disable the FPS limit later and OOM (eg at dawn)
+            if (sleep_time < (delay * -1)) {
+              sleep_time = delay * -1;
+            }
+
+            Debug(4,
+                  "Sleep time is %" PRIi64 " us from now: %.3f s last: %.3f s delta % " PRIi64 " us delay: %" PRIi64 " us",
+                  static_cast<int64>(Microseconds(sleep_time).count()),
+                  FPSeconds(now.time_since_epoch()).count(),
+                  FPSeconds(last_capture_times[i].time_since_epoch()).count(),
+                  static_cast<int64>(delta_time.count()),
+                  static_cast<int64>(Microseconds(delay).count()));
+
+            // When negative the capture took more than the configured FPS time and no need to sleep
+            if (sleep_time > Microseconds(0)) {
+              std::this_thread::sleep_for(sleep_time);
+            }
+          }  // end if has a last_capture time
+
+          last_capture_times[i] = now;
+        }  // end if delay
+      }  // end foreach n_monitors
+
+      if ((result < 0) or zm_reload) {
         // Failure, try reconnecting
-				sleep(5);
         break;
       }
-    }  // end while ! zm_terminate
-    delete [] alarm_capture_delays;
-    delete [] capture_delays;
-    delete [] next_delays;
-    delete [] last_capture_times;
-  } // end while ! zm_terminate outer connection loop
+    }  // end while ! zm_terminate and connected
 
-  for ( int i = 0; i < n_monitors; i++ ) {
-    static char sql[ZM_SQL_SML_BUFSIZ];
-    snprintf(sql, sizeof(sql),
-        "REPLACE INTO Monitor_Status (MonitorId, Status) VALUES ('%d','NotRunning')",
-        monitors[i]->Id());
-    if ( mysql_query(&dbconn, sql) ) {
-      Error("Can't run query: %s", mysql_error(&dbconn));
+    for (std::shared_ptr<Monitor> & monitor : monitors) {
+      monitor->SetHeartbeatTime(std::chrono::system_clock::now());
+      monitor->Close();
+      monitor->SetHeartbeatTime(std::chrono::system_clock::now());
+      monitor->disconnect();
     }
-    delete monitors[i];
+
+    if (zm_reload) {
+      zmLoadStaticConfig();
+      zmLoadDBConfig();
+      for (std::shared_ptr<Monitor> &monitor : monitors) {
+        monitor->Reload();
+      }
+      logTerm();
+      logInit(log_id_string);
+
+      zm_reload = false;
+    }  // end if zm_reload
+  }  // end while ! zm_terminate outer connection loop
+
+  for (std::shared_ptr<Monitor> &monitor : monitors) {
+    std::string sql = stringtf(
+                        "INSERT INTO Monitor_Status (MonitorId,Status) VALUES (%u, 'NotRunning') ON DUPLICATE KEY UPDATE Status='NotRunning',CaptureFPS=0,AnalysisFPS=0,CaptureBandwidth=0",
+                        monitor->Id());
+    zmDbDo(sql);
   }
-  delete [] monitors;
+  monitors.clear();
+  Debug(1, "Cleared monitors");
 
   Image::Deinitialise();
-  logTerm();
+#if HAVE_LIBCURL
+  curl_global_cleanup();
+#endif  // HAVE_LIBCURL
+  Debug(1, "terminating");
+  dbQueue.stop();
   zmDbClose();
+  logTerm();
 
-	return zm_terminate ? 0 : result;
+  return zm_terminate ? 0 : result;
 }
