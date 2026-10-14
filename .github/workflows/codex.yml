@@ -1,6 +1,6 @@
 name: Refresh codex
 
-on:
+on: continous
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
