@@ -31,6 +31,7 @@ set(TEST_SOURCES
   zm_image_annotate.cpp
   zm_monitor_shm.cpp
   zm_monitorstream.cpp
+  zm_monitorlink_token.cpp
   zm_mp4_sidx.cpp
   zm_packetqueue.cpp
   zm_packet_lock.cpp
